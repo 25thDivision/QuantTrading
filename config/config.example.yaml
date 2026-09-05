@@ -1,0 +1,30 @@
+account:            # 계좌 통합 파라미터
+  seed: 5_000_000
+  alloc: {day: 0.3, swing: 0.7}
+  kill_switch: {soft: -0.03, hard: -0.05}      # 2개월 무사고 후 -0.04/-0.06
+  drawdown: {per_strategy: -0.15, account: -0.18}  # 오디션 MDD 확정 후 재설정
+common:             # 시장 무관 공식·규칙
+  risk_per_trade: {day: 0.01, swing: 0.015}
+  fill_model: pessimistic
+markets:
+  kospi:            # 코스피 인스턴스 파라미터 (2026 변동성 국면 보정값)
+    timezone: Asia/Seoul
+    sessions:       # 세션 테이블 — 1급 구조 (결정 9). 전부 정의하되 거래 활성은 tradable로 통제
+      - {name: auction_open,  span: "08:30-09:00", kind: auction,    tradable: false}
+      - {name: continuous,    span: "09:00-15:20", kind: continuous, tradable: true}   # v1 유일 거래 세션
+      - {name: auction_close, span: "15:20-15:30", kind: auction,    tradable: false}
+      - {name: after_fixed,   span: "15:40-16:00", kind: fixed,      tradable: false}
+      - {name: after_single,  span: "16:00-18:00", kind: auction,    tradable: false}
+      # 12시간제(2026-09-14~) 프리·애프터마켓 세션은 세부 확인 후 추가 (DECISIONS.md 11절)
+    day:  {stop: {mode: vol_linked, mult: 0.5, clamp: [-0.03, -0.06]}, max_positions: 1, price_cap: 200_000}
+    swing: {stop: -0.15, positions: 7, price_cap: 160_000, leverage_slot: {max_ratio: 0.5, stop: -0.20}}
+    universe:       # 미확정 — DECISIONS.md 11절 참조
+  us:               # 미국 인스턴스 — 독자 백테스트로 별도 확정 (미정)
+    timezone: America/New_York   # 세션은 현지 시간대로 정의, 서머타임은 라이브러리가 처리
+calendar:           # 미확정 — DECISIONS.md 11절 참조 (시장 캘린더 — 휴장일·단축일·변경일, 소스 미정)
+parking:
+  whitelist:        # 미확정 — DECISIONS.md 11절 참조
+  enabled_for: [swing]
+personal_bot:       # 개인 자동화 봇 (결정 8·9)
+  blocked: derived  # 활성 인스턴스의 거래 세션 합집합 + 전후 버퍼 (고정값 기입 금지)
+  buffer_minutes: 30
