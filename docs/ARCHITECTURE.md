@@ -88,7 +88,7 @@ decisions_log   층 2·3 발동, 승격/강등, 예외 발동 한 줄 로그
 | SSH | 키 인증 전용 (비밀번호·대화형 차단, 00-hardening.conf — sshd는 first-match-wins) |
 | 모니터링 | Netdata (apt, localhost:19999 바인딩, SSH 터널 접근, 수집 1초) + SQLite 자가 기록 + 디스코드 조회 봇(구현 예정) |
 | 무인 복구 | AC 자동부팅 → netplan(optional:true) → Tailscale → SSH 사슬 전체 실증 완료. 완전 정지 시 가족 수동 재부팅 요청 |
-| 개발 환경 | **랩실 서버** (PrecisionTower4214, Ubuntu 24.04, stl 계정, SSH 접속). 시스템 Python 3.13이나 프로젝트는 uv가 3.12 조달 |
+| 개발 환경 | **랩실 서버** (Dell Precision 7920 Tower, Xeon Silver 4214R×2, Ubuntu 24.04, stl 계정, SSH 접속). 시스템 Python 버전(3.12)과 무관하게 프로젝트는 uv가 3.12를 조달 |
 | 저장소 | GitHub 25thDivision/QuantTrading (private) |
 | 잔여 | git 배포 구조 세부 (코드 배포 — 구현 단계와 병행 설계) |
 
@@ -164,7 +164,8 @@ QuantTrading/
 ├── .gitignore           # .env, .venv, __pycache__ 등
 ├── .env.example         # 키 항목 이름만 (값 없음 — 랩실·k12 각자 .env 작성용 서식)
 ├── config/              # 설정 (5절 구조), 시크릿은 .env 별도 (git 제외)
-├── src/
+├── quant_trading/     # 최상위 패키지
+│   ├── __init__.py
 │   ├── collector/
 │   ├── strategy/      # 플러그인들 + 공용 인터페이스
 │   ├── portfolio/
