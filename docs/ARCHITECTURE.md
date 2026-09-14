@@ -1,7 +1,7 @@
 # ARCHITECTURE.md — 구현 지침
 
 > Claude Code 및 구현 채팅이 참조하는 설계도. 결정의 근거와 수치는 DECISIONS.md가 원본이며, 충돌 시 DECISIONS.md가 우선한다.
-> 최종 갱신: 2026-09-03
+> 최종 갱신: 2026-09-14
 
 ---
 
@@ -27,7 +27,7 @@
 
 **모듈 목록**
 ```
-collector      시세 수집 (분봉 수집기 — 최우선 구현 대상)
+collector      시세 수집 (마감 후 REST 스윕 배치 — 결정 11, 최우선 구현 대상)
 strategy/      전략 플러그인들 (1a.py, 1b.py, 1bp.py, 2c.py, ...)
 portfolio      자본 배분, 포지션 크기 산출(고정 리스크), 슬롯 관리(레버리지/파킹/대체)
 execution      주문 전송·체결 확인·재시도·취소. 레이트 리미터 내장(한국투자증권 초당 호출 제한 대응)
@@ -47,14 +47,16 @@ orders          주문 원장 (id, ts, symbol, side, qty, price, type, status, s
 fills           체결 기록 (order_id, ts, qty, price, fee)
 positions       현재 포지션 (symbol, qty, avg_price, strategy_id, state, stop_price)
 position_events 상태 머신 전이 로그
-candles_1m      분봉 (수집기 적재, 서버 보존 약 1년 후 정리)
-candles_1d      일봉
+candles_1m      분봉 (원본가 불변 저장 — 결정 11. 스윕 배치 적재, 서버 보존 약 1년 후 정리)
+candles_1d      일봉 (원본가)
+collector_log   수집 장부 (날짜×종목×종류별 상태·행수·시각 — 완전성 판정의 근거, 결정 11)
+corporate_actions 기업행위 조정 계수 (분할·병합·배당락 — 세부는 Phase 1)
 universe_log    유니버스 스냅샷 (일자별 — 백테스트 생존편향 대응에도 사용)
 metrics         자가 지표 (5분 주기 시스템 지표 + 트레이딩 지표)
 decisions_log   층 2·3 발동, 승격/강등, 예외 발동 한 줄 로그
 ```
-- 틱은 저장하지 않는다: 링버퍼(종목당 최근 1만 틱)로만 유지, 즉시 분봉 집계 후 flush
-- 틱·호가의 별도 수집 여부는 미확정 (DECISIONS.md 11절 — Phase 0 실측 후 결정. k12 부적합 시 랩실 별도 수집기로 분리)
+- **분봉 수집 = 마감 후 REST 스윕 (결정 11)**: 매일 20:00 이후(파라미터) 당일분봉조회(FHKST03010200, 30건/회, 종목당 ~14회)로 코스피 전 종목 완전 수집. 실전 키 유량 18건/초 기준 약 12분. 일별분봉조회(FHKST03010230, 120건/회, 소급 약 1년)는 결손 보충 전용 — 15:20~15:29 결락 실측으로 일상 수집 배제
+- 장중 틱은 저장하지 않는다: 실시간 엔진(훗날)이 링버퍼(종목당 최근 1만 틱)로만 유지, 판단 후 소멸. 틱·호가의 별도 수집 여부는 미확정 (DECISIONS.md 11절)
 
 ### 본체·랩실 (분석) — Parquet + DuckDB
 - 파티셔닝: `market/interval/year/symbol.parquet` 형태 (구현 시 확정)
@@ -88,7 +90,7 @@ decisions_log   층 2·3 발동, 승격/강등, 예외 발동 한 줄 로그
 | SSH | 키 인증 전용 (비밀번호·대화형 차단, 00-hardening.conf — sshd는 first-match-wins) |
 | 모니터링 | Netdata (apt, localhost:19999 바인딩, SSH 터널 접근, 수집 1초) + SQLite 자가 기록 + 디스코드 조회 봇(구현 예정) |
 | 무인 복구 | AC 자동부팅 → netplan(optional:true) → Tailscale → SSH 사슬 전체 실증 완료. 완전 정지 시 가족 수동 재부팅 요청 |
-| 개발 환경 | **랩실 서버** (Dell Precision 7920 Tower, Xeon Silver 4214R×2, Ubuntu 24.04, stl 계정, SSH 접속). 시스템 Python 버전(3.12)과 무관하게 프로젝트는 uv가 3.12를 조달 |
+| 개발 환경 | **랩실 서버** (Dell Precision 7920 Tower, Xeon Silver 4214R×2, Ubuntu 24.04, stl 계정, SSH 접속). 시스템 Python 버전과 무관하게 프로젝트는 uv가 3.12를 조달 |
 | 저장소 | GitHub 25thDivision/QuantTrading (private) |
 | 잔여 | git 배포 구조 세부 (코드 배포 — 구현 단계와 병행 설계) |
 
@@ -115,13 +117,13 @@ common:             # 시장 무관 공식·규칙
 markets:
   kospi:            # 코스피 인스턴스 파라미터 (2026 변동성 국면 보정값)
     timezone: Asia/Seoul
-    sessions:       # 세션 테이블 — 1급 구조 (결정 9). 전부 정의하되 거래 활성은 tradable로 통제
+    sessions:       # 세션 테이블 — 1급 구조 (결정 9). 전부 정의하되 거래 활성은 tradable로 통제. 2026-09-14 제도 개편 반영
       - {name: auction_open,  span: "08:30-09:00", kind: auction,    tradable: false}
       - {name: continuous,    span: "09:00-15:20", kind: continuous, tradable: true}   # v1 유일 거래 세션
       - {name: auction_close, span: "15:20-15:30", kind: auction,    tradable: false}
-      - {name: after_fixed,   span: "15:40-16:00", kind: fixed,      tradable: false}
-      - {name: after_single,  span: "16:00-18:00", kind: auction,    tradable: false}
-      # 12시간제(2026-09-14~) 프리·애프터마켓 세션은 세부 확인 후 추가 (DECISIONS.md 11절)
+      - {name: after_fixed,   span: "15:40-16:00", kind: fixed,      tradable: false}  # 존치 여부 확인 필요 (DECISIONS.md 11절)
+      - {name: aftermarket,   span: "16:00-20:00", kind: continuous, tradable: false}  # KRX 애프터마켓 (2026-09-14~, 시간외단일가 대체). 수집 대상
+      # KRX 프리마켓은 추후 도입 보도 — 시행 확인 후 추가
     day:  {stop: {mode: vol_linked, mult: 0.5, clamp: [-0.03, -0.06]}, max_positions: 1, price_cap: 200_000}
     swing: {stop: -0.15, positions: 7, price_cap: 160_000, leverage_slot: {max_ratio: 0.5, stop: -0.20}}
     universe: {...}
@@ -142,7 +144,8 @@ personal_bot:       # 개인 자동화 봇 (결정 8·9)
 | Phase | 내용 | 비고 |
 |---|---|---|
 | 세션 0 | 저장소 부트스트랩: 골격·문서 배치·설정 골격만 (기능 코드 없음) | 별도 지시 문안으로 진행 |
-| 0 | **분봉 수집기** + SQLite 스키마 + systemd 서비스화 + 디스코드 알림 기초 + **한국투자증권 API 실스펙 확인** (IP 허용 목록, 토큰·세션 정책, 웹소켓 등록 한도, 소수점 거래, 거래소 지정(KRX 한정) 가능 여부, 12시간제 API 반영 — DECISIONS.md 11절 관문들) | 최우선 — 데이터 축적은 빠를수록 이득. 서버 첫 상주 서비스 |
+| 0-A | 저장소 구조 반영(결정 10) + API 실스펙 실측·문서 확인 | **완료 (2026-09-14)** — 실측 결과는 DECISIONS.md 결정 9·11과 11절에 반영 |
+| 0-B | **분봉 스윕 수집기**(결정 11) + SQLite 스키마 + systemd 유닛·타이머 + 디스코드 알림 기초. 첫 실전 실행 = 검증 모드 | 서버 첫 상주 서비스. 데이터 축적은 빠를수록 이득 |
 | 1 | 데이터 파이프라인: pykrx 일봉 수집 + 일 단위 배치류 확장(결정 8), Parquet 내보내기, pull 동기화, 유니버스 계산 | ③ 백테스트 준비 완료 조건 |
 | 2 | 백테스트 1차(vectorbt): ③ 2-C (+2-A/2-B), ① 1-A 일봉 근사 | 시장 필터·종목 수·손절 민감도 비교 포함. 실행 머신 결정 선행 (11절) |
 | 3 | 자작 이벤트 엔진 + FillModel + 2차 검증 → **오디션 판정, 층 3 수치 재설정** | 합격 판정의 주체 |
@@ -164,8 +167,8 @@ QuantTrading/
 ├── .gitignore           # .env, .venv, __pycache__ 등
 ├── .env.example         # 키 항목 이름만 (값 없음 — 랩실·k12 각자 .env 작성용 서식)
 ├── config/              # 설정 (5절 구조), 시크릿은 .env 별도 (git 제외)
-├── quant_trading/     # 최상위 패키지
-│   ├── __init__.py
+├── quant_trading/     # 최상위 패키지 — 자체 코드 본체 (결정 10, editable 설치)
+│   ├── __init__.py    # 각 하위 모듈에도 __init__.py
 │   ├── collector/
 │   ├── strategy/      # 플러그인들 + 공용 인터페이스
 │   ├── portfolio/
