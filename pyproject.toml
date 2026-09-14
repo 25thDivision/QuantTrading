@@ -3,7 +3,11 @@ name = "QuantTrading"
 version = "0.1.0"
 description = "QuantTrading — 시스템 트레이딩 저장소 (docs/DECISIONS.md, docs/ARCHITECTURE.md 참조)"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "pykrx>=1.2.8",
+    "pyyaml>=6.0.3",
+    "requests>=2.34.2",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13"]
@@ -12,3 +16,8 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "quant_trading"
 module-root = ""
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
