@@ -5,7 +5,7 @@ import sqlite3
 from collections import Counter
 from typing import Any
 
-from quant_trading.collector.models import Candle, LogEntry
+from quant_trading.collector.models import KIND_INTRADAY_1M, Candle, LogEntry
 
 _UPSERT_CANDLE = """
 INSERT INTO candles_1m (symbol, ts, trade_date, session, open, high, low, close, volume, amount_cum, source, collected_at)
@@ -58,7 +58,7 @@ def upsert_log(conn: sqlite3.Connection, entry: LogEntry) -> None:
 def run_summary(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
     """run_id 기준 장부 집계 — 디스코드 한 줄 보고의 근거."""
     rows = conn.execute(
-        "SELECT status, reason, rows FROM collector_log WHERE run_id = ?", (run_id,)
+        "SELECT status, reason, rows FROM collector_log WHERE run_id = ? AND kind = ?", (run_id, KIND_INTRADAY_1M)
     ).fetchall()
     status_counts: Counter[str] = Counter(r["status"] for r in rows)
     error_reasons: Counter[str] = Counter(

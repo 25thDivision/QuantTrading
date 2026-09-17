@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "QuantTrading — 시스템 트레이딩 저장소 (docs/DECISIONS.md, docs/ARCHITECTURE.md 참조)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
-    "pykrx>=1.2.8",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
 ]

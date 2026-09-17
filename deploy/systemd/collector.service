@@ -1,6 +1,5 @@
 # QuantTrading 분봉 스윕 수집기 (결정 11) — k12 전용 oneshot 서비스. collector.timer 가 매일 기동한다.
 # 배포: scripts/deploy_units.sh 로 /etc/systemd/system/ 에 복사 → daemon-reload (심볼릭 링크 금지 — 결정 8)
-# TODO(배포 시 확정): User / WorkingDirectory / uv 경로는 k12 의 실제 계정·체크아웃 경로에 맞춰 수정
 [Unit]
 Description=QuantTrading minute-candle sweep collector (decision 11)
 After=network-online.target
@@ -11,11 +10,12 @@ StartLimitBurst=3
 
 [Service]
 Type=oneshot
-User=k12user
-WorkingDirectory=/home/k12user/QuantTrading
+User=seokhyeon
+WorkingDirectory=/home/seokhyeon/QuantTrading
 # .env 는 코드가 직접 읽는다 (EnvironmentFile 은 인라인 주석을 지원하지 않으므로 사용하지 않음)
 # 실전 키 시세 조회는 k12 내에서만 (결정 11). 로컬 config 의 default_env(paper)를 --env real 로 덮어쓴다
-ExecStart=%h/.local/bin/uv run --project /home/k12user/QuantTrading python scripts/sweep_candles.py --env real
+# uv 는 절대 경로 (%h 치환자는 시스템 유닛에서 root 홈으로 풀릴 수 있어 사용하지 않음)
+ExecStart=/home/seokhyeon/.local/bin/uv run --project /home/seokhyeon/QuantTrading python scripts/sweep_candles.py --env real
 Restart=on-failure
 RestartSec=5min
 TimeoutStartSec=2h

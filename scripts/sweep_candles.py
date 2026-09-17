@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="설정 파일 경로 (기본 config/config.yaml)")
     parser.add_argument("--env", choices=["real", "paper"], default=None, help="키·도메인 세트 (기본 broker.kis.default_env)")
     parser.add_argument("--date", default=None, help="기대 거래일 YYYY-MM-DD (API 반환 거래일과 다르면 중단)")
-    parser.add_argument("--symbols", default=None, help="쉼표 구분 종목코드. 지정 시 pykrx 조회 생략")
+    parser.add_argument("--symbols", default=None, help="쉼표 구분 종목코드. 지정 시 종목정보파일 조회 생략")
     parser.add_argument("--limit", type=int, default=None, help="선두 N 종목만")
     parser.add_argument("--no-notify", action="store_true", help="디스코드 알림 생략")
     parser.add_argument("--log-level", default="INFO")

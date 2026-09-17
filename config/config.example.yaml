@@ -50,7 +50,14 @@ collector:          # 분봉 스윕 수집기 (결정 11) — 마감 후 REST �
   max_pages_margin: 2           # 최대 페이지 = ceil(수집 창 분 수 / page_size) + margin
   probe_symbols: 5              # 거래일 판별에 시도할 선두 종목 수
   progress_log_every: 50        # 진행 로그 간격(종목 수)
-  symbol_source: {provider: pykrx, market: KOSPI}   # pykrx get_market_ticker_list(date, market). KRX 로그인(KRX_ID/KRX_PW)은 .env
+  symbol_source:                # 한국투자증권 종목정보파일 (출처: 공식 GitHub stocks_info/kis_kospi_code_mst.py, 종목마스터정보(코스피).h)
+    provider: kis_master
+    url: https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip
+    member: kospi_code.mst      # zip 안의 파일명
+    cache_path: data/kospi_code.mst   # 스윕 시작 시 다운로드해 갱신. 실패 시 직전 캐시 사용 + 경고
+    timeout_sec: 30
+    groups: [ST, EF]            # 증권그룹구분코드: ST 주권, EF ETF. ETN(EN)·수익증권(BC)·리츠(RT) 등 제외
+    common_only: true           # 주권(ST) 중 우선주구분코드 0(보통주)만. 우선주(1 구형, 2 신형) 제외
   notify: {discord: true}       # 스윕 종료 시 collector_log 집계 한 줄 전송 (웹훅 미설정 시 경고 로그만)
 
 broker:

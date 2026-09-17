@@ -241,7 +241,7 @@ def sweep(
     return result
 
 
-def format_summary(result: SweepResult, error_reasons: dict[str, int]) -> str:
+def format_summary(result: SweepResult, error_reasons: dict[str, int], *, note: str | None = None) -> str:
     c = result.status_counts
     reasons = ", ".join(f"{k}×{v}" for k, v in sorted(error_reasons.items(), key=lambda kv: -kv[1])[:3])
     mm, ss = divmod(int(result.elapsed_sec), 60)
@@ -249,4 +249,5 @@ def format_summary(result: SweepResult, error_reasons: dict[str, int]) -> str:
         f"[collector {result.env}] {result.trade_date} 스윕 종료: 성공 {c.get(STATUS_OK, 0)} / 부분 {c.get(STATUS_PARTIAL, 0)}"
         f" / 무거래 {c.get(STATUS_NO_TRADE, 0)} / 실패 {c.get(STATUS_ERROR, 0)}"
         f"{'(' + reasons + ')' if reasons else ''} / 행 {result.rows} / 종목 {len(result.outcomes)} / 소요 {mm}분 {ss}초"
+        f"{' / 경고: ' + note if note else ''}"
     )
