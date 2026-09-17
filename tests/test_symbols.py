@@ -72,6 +72,10 @@ def cfg(tmp_path):
     return cfg
 
 
+def test_config_default_includes_preferred(cfg):
+    assert cfg["collector"]["symbol_source"]["common_only"] is False
+
+
 def test_load_symbols_downloads_and_caches(cfg, tmp_path):
     calls = []
 
@@ -81,7 +85,7 @@ def test_load_symbols_downloads_and_caches(cfg, tmp_path):
 
     result = load_symbols(cfg, downloader=fake_download)
     assert result.source == "download" and result.warning is None
-    assert result.symbols == ["000001", "005930", "069500"]
+    assert result.symbols == ["000001", "000885", "005930", "005935", "069500"]   # config 기본 common_only: false → 우선주 포함
     assert calls == [(cfg["collector"]["symbol_source"]["url"], "kospi_code.mst")]
     assert (tmp_path / "kospi_code.mst").read_bytes() == SAMPLE
 
@@ -94,7 +98,7 @@ def test_load_symbols_falls_back_to_cache_with_warning(cfg, tmp_path):
 
     result = load_symbols(cfg, downloader=failing_download)
     assert result.source == "cache" and "dns down" in result.warning
-    assert result.symbols == ["000001", "005930", "069500"]
+    assert result.symbols == ["000001", "000885", "005930", "005935", "069500"]
 
 
 def test_load_symbols_without_cache_raises(cfg):
