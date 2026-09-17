@@ -57,7 +57,7 @@ collector:          # 분봉 스윕 수집기 (결정 11) — 마감 후 REST �
     cache_path: data/kospi_code.mst   # 스윕 시작 시 다운로드해 갱신. 실패 시 직전 캐시 사용 + 경고
     timeout_sec: 30
     groups: [ST, EF]            # 증권그룹구분코드: ST 주권, EF ETF. ETN(EN)·수익증권(BC)·리츠(RT) 등 제외
-    common_only: true           # 주권(ST) 중 우선주구분코드 0(보통주)만. 우선주(1 구형, 2 신형) 제외
+    common_only: false           # 주권(ST) 중 우선주구분코드 0(보통주)만. 우선주(1 구형, 2 신형) 제외
   notify: {discord: true}       # 스윕 종료 시 collector_log 집계 한 줄 전송 (웹훅 미설정 시 경고 로그만)
 
 broker:
