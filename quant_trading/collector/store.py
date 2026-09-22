@@ -5,7 +5,7 @@ import sqlite3
 from collections import Counter
 from typing import Any
 
-from quant_trading.collector.models import KIND_INTRADAY_1M, Candle, LogEntry
+from quant_trading.collector.models import KIND_INTRADAY_1M, PROTECTED_STATUSES, STATUS_RANK, Candle, LogEntry
 
 _UPSERT_CANDLE = """
 INSERT INTO candles_1m (symbol, ts, trade_date, session, open, high, low, close, volume, amount_cum, source, collected_at)
@@ -45,7 +45,17 @@ def upsert_candles(conn: sqlite3.Connection, candles: list[Candle]) -> int:
     return len(candles)
 
 
-def upsert_log(conn: sqlite3.Connection, entry: LogEntry) -> None:
+def upsert_log(conn: sqlite3.Connection, entry: LogEntry, *, protect: bool = True) -> bool:
+    """장부 기록. protect=True 면 기존 행이 ok/partial 일 때 그보다 낮은 상태(error·no_trade, ok→partial)로
+    덮어쓰지 않는다 — 수집 창이 닫힌 뒤의 date_mismatch 재실행이 정상 장부를 지우는 사고 방지. 기록 여부 반환."""
+    if protect:
+        row = conn.execute(
+            "SELECT status FROM collector_log WHERE trade_date = ? AND symbol = ? AND kind = ?",
+            (entry.trade_date, entry.symbol, entry.kind),
+        ).fetchone()
+        if row is not None and row["status"] in PROTECTED_STATUSES:
+            if STATUS_RANK.get(entry.status, 0) < STATUS_RANK[row["status"]]:
+                return False
     with conn:
         conn.execute(
             _UPSERT_LOG,
@@ -53,6 +63,15 @@ def upsert_log(conn: sqlite3.Connection, entry: LogEntry) -> None:
              entry.rows_traded, entry.pages, entry.first_ts, entry.last_ts,
              entry.started_at, entry.finished_at, entry.run_id),
         )
+    return True
+
+
+def ok_symbols(conn: sqlite3.Connection, trade_date: str, kind: str = KIND_INTRADAY_1M) -> set[str]:
+    """해당 날짜·종류에서 장부상 ok 인 종목 — 선택 재시도(기본 재실행)의 제외 집합."""
+    rows = conn.execute(
+        "SELECT symbol FROM collector_log WHERE trade_date = ? AND kind = ? AND status = 'ok'", (trade_date, kind)
+    ).fetchall()
+    return {r["symbol"] for r in rows}
 
 
 def run_summary(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:

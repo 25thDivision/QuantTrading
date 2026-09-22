@@ -103,7 +103,7 @@ def test_rerun_is_idempotent(cfg, conn):
     first_collected = conn.execute("SELECT collected_at FROM candles_1m WHERE ts='2026-09-14 09:00'").fetchone()[0]
     # 두 번째 실행: 값이 바뀐 행이 갱신되고 행 수는 그대로
     data["005930"] = day_rows(TODAY, price=2000) + day_rows(PREV)
-    r2 = sweep(cfg, client, conn, ["005930"], env="paper", now=after_close() + timedelta(minutes=5))
+    r2 = sweep(cfg, client, conn, ["005930"], env="paper", now=after_close() + timedelta(minutes=5), retry_only=False)  # --all
     assert r1.run_id != r2.run_id
     assert conn.execute("SELECT COUNT(*) FROM candles_1m").fetchone()[0] == 661
     assert conn.execute("SELECT COUNT(*) FROM (SELECT DISTINCT symbol, ts FROM candles_1m)").fetchone()[0] == 661
@@ -133,7 +133,7 @@ def test_ledger_records_every_status_and_continues_after_errors(cfg, conn):
     assert status["BBBBBB"] == ("no_trade", "no rows")
     assert status["CCCCCC"][0] == "error" and status["CCCCCC"][1].startswith("EGW00201")
     assert status["DDDDDD"] == ("no_trade", "all rows volume 0")
-    assert status["EEEEEE"][0] == "error" and status["EEEEEE"][1].startswith("date_mismatch api=20260911")
+    assert status["EEEEEE"][0] == "error" and status["EEEEEE"][1].startswith("date_mismatch api=2026-09-11 expected=2026-09-14")
     assert status["FFFFFF"] == ("ok", None)
     assert status["GGGGGG"][0] == "error" and "boom" in status["GGGGGG"][1]
     assert result.status_counts == {"ok": 2, "no_trade": 2, "error": 3}

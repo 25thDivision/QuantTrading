@@ -190,5 +190,19 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
     counts = summarize(records, symbols)
     if not symbols:
         raise SymbolSourceError(f"필터 결과 종목이 0개 (groups={groups}, common_only={common_only}, counts={counts})")
-    log.info("종목 목록(%s): 보통주 %d + ETF %d = %d 종목 (파싱 %d행)", source, counts["common_stock"], counts["etf"], len(symbols), len(records))
+    counts["selected_common_stock"] = sum(1 for r in records if r.code in set(symbols) and r.is_common_stock)
+    counts["selected_preferred_stock"] = sum(1 for r in records if r.code in set(symbols) and r.group == GROUP_STOCK and not r.is_common_stock)
+    counts["selected_etf"] = sum(1 for r in records if r.code in set(symbols) and r.is_etf)
+    log.info(
+        "종목 목록(%s): 채택 %d = 보통주 %d + 우선주 %d + ETF %d (groups=%s common_only=%s, 파싱 %d행: ST %d/EF %d/EN %d)",
+        source, len(symbols), counts["selected_common_stock"], counts["selected_preferred_stock"], counts["selected_etf"],
+        groups, common_only, len(records), counts.get("ST", 0), counts.get("EF", 0), counts.get("EN", 0),
+    )
     return SymbolLoadResult(symbols=symbols, source=source, warning=warning, counts=counts, cache_path=cache_path)
+
+
+def describe(result: SymbolLoadResult) -> str:
+    """장부(symbol_source 행)의 reason 에 남길 한 줄 — 어떤 필터로 몇 종목이 채택됐는지 증거."""
+    c = result.counts
+    return (f"{result.source}: selected {c.get('selected', 0)} = common {c.get('selected_common_stock', 0)}"
+            f" + preferred {c.get('selected_preferred_stock', 0)} + etf {c.get('selected_etf', 0)}")

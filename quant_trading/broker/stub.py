@@ -17,18 +17,28 @@ class StubQuoteClient:
         *,
         page_size: int = 30,
         failures: dict[str, QuoteResponse | Exception] | None = None,
+        daily_data: dict[str, list[dict[str, Any]]] | None = None,
+        daily_page_size: int = 120,
     ) -> None:
         self.data = data
         self.page_size = page_size
         self.failures = failures or {}
+        self.daily_data = daily_data or {}
+        self.daily_page_size = daily_page_size
         self.calls: list[tuple[str, str]] = []
 
-    def intraday_candles(self, symbol: str, hour: str) -> QuoteResponse:
-        self.calls.append((symbol, hour))
+    def _failure(self, symbol: str) -> QuoteResponse | None:
         if symbol in self.failures:
             failure = self.failures[symbol]
             if isinstance(failure, Exception):
                 raise failure
+            return failure
+        return None
+
+    def intraday_candles(self, symbol: str, hour: str) -> QuoteResponse:
+        self.calls.append((symbol, hour))
+        failure = self._failure(symbol)
+        if failure is not None:
             return failure
         rows = self.data.get(symbol, [])
         if not rows:
@@ -39,3 +49,16 @@ class StubQuoteClient:
             if r["stck_bsop_date"] < today or r["stck_cntg_hour"] <= hour
         ]
         return QuoteResponse("0", "MCA00000", "정상처리 되었습니다.", eligible[: self.page_size])
+
+    def daily_candles(self, symbol: str, date_yyyymmdd: str, hour: str) -> QuoteResponse:
+        """일별분봉 스텁: 지정일 이하 날짜의 행을 기준시각 이하부터 page_size 건 (daily_page_size 우선)."""
+        self.calls.append((symbol, f"{date_yyyymmdd}:{hour}"))
+        failure = self._failure(symbol)
+        if failure is not None:
+            return failure
+        rows = [r for r in self.daily_data.get(symbol, self.data.get(symbol, [])) if r["stck_bsop_date"] <= date_yyyymmdd]
+        if not rows:
+            return QuoteResponse("0", "MCA00000", "정상처리 되었습니다.", [])
+        top = max(r["stck_bsop_date"] for r in rows)
+        eligible = [r for r in rows if r["stck_bsop_date"] < top or r["stck_cntg_hour"] <= hour]
+        return QuoteResponse("0", "MCA00000", "정상처리 되었습니다.", eligible[: self.daily_page_size])

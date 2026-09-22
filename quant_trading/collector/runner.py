@@ -14,8 +14,8 @@ from quant_trading.broker.ratelimit import RateLimiter
 from quant_trading.collector.models import STATUS_ERROR, LogEntry
 from quant_trading.collector.schema import connect
 from quant_trading.collector.store import run_summary, upsert_log
-from quant_trading.collector.sweep import SweepResult, format_summary, sweep
-from quant_trading.collector.symbols import SymbolLoadResult, load_symbols
+from quant_trading.collector.sweep import SweepResult, backfill, format_summary, sweep
+from quant_trading.collector.symbols import SymbolLoadResult, describe, load_symbols
 from quant_trading.config import require
 from quant_trading.notify import discord
 
@@ -50,11 +50,15 @@ def run_sweep(
     expected_date: str | None = None,
     notify: bool = True,
     now: datetime | None = None,
+    retry_only: bool = True,
+    mode: str = "intraday",
 ) -> SweepResult:
+    """retry_only=False 가 --all (장부상 ok 종목도 강제 갱신). mode='backfill' 은 --backfill (expected_date 필수)."""
     ccfg = require(cfg, "collector")
     notify = notify and bool(require(ccfg, "notify", "discord"))
     try:
-        return _run(cfg, ccfg, env=env, symbols=symbols, limit=limit, expected_date=expected_date, notify=notify, now=now)
+        return _run(cfg, ccfg, env=env, symbols=symbols, limit=limit, expected_date=expected_date, notify=notify, now=now,
+                    retry_only=retry_only, mode=mode)
     except Exception as exc:
         # 스윕 중단 경로 — 중단 지점에서 alerts 로 발송 시도 후 그대로 전파 (종료코드 2 는 진입점이 결정)
         if notify:
@@ -62,7 +66,7 @@ def run_sweep(
         raise
 
 
-def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now) -> SweepResult:
+def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_only, mode) -> SweepResult:
     limiter = RateLimiter(float(require(ccfg, "rate_per_sec", env)))
     client = KisQuoteClient(cfg, env, limiter)
     conn = connect(str(ccfg["db_path"]))
@@ -73,16 +77,20 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now) -> Sweep
             symbols = loaded.symbols
         if limit:
             symbols = symbols[:limit]
-        result = sweep(cfg, client, conn, symbols, env=env, expected_date=expected_date, now=now)
+        if mode == "backfill":
+            result = backfill(cfg, client, conn, symbols, env=env, target_date=expected_date or "", now=now, retry_only=retry_only)
+        else:
+            result = sweep(cfg, client, conn, symbols, env=env, expected_date=expected_date, now=now, retry_only=retry_only)
         if loaded is not None:
-            # 종목 목록 출처를 장부에 남긴다 (다운로드/캐시, 경고 사유). symbol='*' 는 스윕 전체 항목
+            # 종목 목록 출처·필터 결과를 장부에 남긴다 (다운로드/캐시, 채택 내역). symbol='*' 는 스윕 전체 항목
             stamp = result.finished_at.isoformat(timespec="seconds")
             upsert_log(conn, LogEntry(
                 trade_date=result.trade_date, symbol="*", kind="symbol_source",
-                status="warning" if loaded.warning else "ok", reason=loaded.warning or loaded.source,
+                status="warning" if loaded.warning else "ok",
+                reason=(loaded.warning + " | " if loaded.warning else "") + describe(loaded),
                 rows=len(loaded.symbols), rows_traded=0, pages=0, first_ts=None, last_ts=None,
                 started_at=result.started_at.isoformat(timespec="seconds"), finished_at=stamp, run_id=result.run_id,
-            ))
+            ), protect=False)
         summary = run_summary(conn, result.run_id)
     finally:
         conn.close()

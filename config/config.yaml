@@ -46,7 +46,13 @@ collector:          # 분봉 스윕 수집기 (결정 11) — 마감 후 REST �
     market_div_code: J          # J: KRX
     include_past: "Y"           # FID_PW_DATA_INCU_YN — 기준시각 이전 행 포함(내림차순)
     page_size: 30
+  backfill_api:                 # --backfill 전용: 주식일별분봉조회 (1회 최대 120건, 약 1년 소급, 15:20~15:29 미제공 → 결과는 partial)
+    tr_id: FHKST03010230
+    path: /uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice
+    page_size: 120
+    fake_tick: ""               # FID_FAKE_TICK_INCU_YN — 공백 필수 (공식 문서)
   db_path: data/quant_trading.sqlite3   # 저장소 루트 기준 상대 경로 (data/ 는 git 제외)
+  max_consecutive_date_mismatch: 5   # 순회 중 date_mismatch 가 이만큼 연속되면 "수집 창 닫힘"(API 거래일 변경)으로 판정하고 즉시 중단
   max_pages_margin: 2           # 최대 페이지 = ceil(수집 창 분 수 / page_size) + margin
   probe_symbols: 5              # 거래일 판별에 시도할 선두 종목 수
   progress_log_every: 50        # 진행 로그 간격(종목 수)
@@ -74,6 +80,9 @@ broker:
       issue_limit_codes: [EGW00133]
       expired_codes: [EGW00123] # 만료 토큰 응답 코드 — 해당 시 캐시 무효화 후 1회 재발급
     rate_limit_codes: [EGW00201]  # 초당 거래건수 초과 — 백오프 재시도
+    transient_codes: [EGW00316]   # 서버 일시 오류 — 해당 페이지를 transient_backoff_sec 간격으로 transient_retries 회 즉시 재시도 후 실패면 error 기록
+    transient_retries: 2
+    transient_backoff_sec: 2.0
     timeout_sec: 15
     max_retries: 3
     retry_backoff_sec: 2.0

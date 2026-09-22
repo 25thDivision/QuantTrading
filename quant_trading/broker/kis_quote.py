@@ -1,4 +1,4 @@
-"""한국투자증권 시세 조회 최소 어댑터 — 접근토큰 발급·캐싱 + 주식당일분봉조회(FHKST03010200)만.
+"""한국투자증권 시세 조회 최소 어댑터 — 접근토큰 발급·캐싱 + 주식당일분봉조회(FHKST03010200) + 주식일별분봉조회(FHKST03010230, 소급 보충 전용).
 
 - 실전/모의 전환은 설정(broker.kis.<env>)의 도메인·키 환경변수 이름으로만 이루어진다.
 - 토큰은 파일 캐시(24시간 유효, 만료 여유분 전까지 재사용)로 재발급을 절제한다.
@@ -62,6 +62,9 @@ class KisQuoteClient:
         self.expired_codes = set(tok["expired_codes"])
         self.tz = ZoneInfo(str(tok["timezone"]))
         self.rate_limit_codes = set(kis["rate_limit_codes"])
+        self.transient_codes = set(kis["transient_codes"])          # 서버 일시 오류 (EGW00316 등)
+        self.transient_retries = int(kis["transient_retries"])
+        self.transient_backoff = float(kis["transient_backoff_sec"])
         self.timeout = float(kis["timeout_sec"])
         self.max_retries = int(kis["max_retries"])
         self.retry_backoff = float(kis["retry_backoff_sec"])
@@ -70,6 +73,10 @@ class KisQuoteClient:
         self.intraday_tr_id = str(api["tr_id"])
         self.market_div_code = str(api["market_div_code"])
         self.include_past = str(api["include_past"])
+        bapi = require(cfg, "collector", "backfill_api")
+        self.daily_path = str(bapi["path"])
+        self.daily_tr_id = str(bapi["tr_id"])
+        self.daily_fake_tick = str(bapi["fake_tick"])
         self.limiter = limiter
         self.session = session or requests.Session()
         self._sleep = sleep
@@ -161,13 +168,7 @@ class KisQuoteClient:
         }
 
     def intraday_candles(self, symbol: str, hour: str) -> QuoteResponse:
-        """주식당일분봉조회 1페이지 (기준시각 hour=HHMMSS 이하, 최대 30건, 내림차순).
-
-        - 유량 초과(EGW00201)·네트워크 오류: 백오프 후 재시도 (max_retries)
-        - 토큰 만료 응답: 캐시 무효화 후 1회 재발급
-        - 그 밖의 업무 오류: 그대로 반환 (호출자가 장부에 사유 기록)
-        """
-        url = self.base_url + self.intraday_path
+        """주식당일분봉조회 1페이지 (기준시각 hour=HHMMSS 이하, 최대 30건, 내림차순)."""
         params = {
             "FID_ETC_CLS_CODE": "",
             "FID_COND_MRKT_DIV_CODE": self.market_div_code,
@@ -175,15 +176,39 @@ class KisQuoteClient:
             "FID_INPUT_HOUR_1": hour,
             "FID_PW_DATA_INCU_YN": self.include_past,
         }
+        return self._get_candles(self.intraday_path, self.intraday_tr_id, params, f"{symbol} {hour}")
+
+    def daily_candles(self, symbol: str, date_yyyymmdd: str, hour: str) -> QuoteResponse:
+        """주식일별분봉조회 1페이지 (지정일·기준시각 이하, 최대 120건, 내림차순). 결손 소급 보충 전용."""
+        params = {
+            "FID_COND_MRKT_DIV_CODE": self.market_div_code,
+            "FID_INPUT_ISCD": symbol,
+            "FID_INPUT_HOUR_1": hour,
+            "FID_INPUT_DATE_1": date_yyyymmdd,
+            "FID_PW_DATA_INCU_YN": self.include_past,
+            "FID_FAKE_TICK_INCU_YN": self.daily_fake_tick,
+        }
+        return self._get_candles(self.daily_path, self.daily_tr_id, params, f"{symbol} {date_yyyymmdd} {hour}")
+
+    def _get_candles(self, path: str, tr_id: str, params: dict[str, str], label: str) -> QuoteResponse:
+        """분봉 조회 공통 루프.
+
+        - 유량 초과(EGW00201)·네트워크 오류: 백오프 후 재시도 (max_retries)
+        - 서버 일시 오류(transient_codes, 예 EGW00316): transient_backoff 간격으로 transient_retries 회 즉시 재시도
+        - 토큰 만료 응답: 캐시 무효화 후 1회 재발급
+        - 그 밖의 업무 오류: 그대로 반환 (호출자가 장부에 사유 기록)
+        """
+        url = self.base_url + path
         reissued = False
+        transient_left = self.transient_retries
         last_error = "unknown"
         for attempt in range(self.max_retries + 1):
             self.limiter.wait()
             try:
-                resp = self.session.get(url, headers=self._headers(self.intraday_tr_id), params=params, timeout=self.timeout)
+                resp = self.session.get(url, headers=self._headers(tr_id), params=params, timeout=self.timeout)
             except requests.RequestException as exc:
                 last_error = f"network: {exc.__class__.__name__}: {exc}"
-                log.warning("%s %s 네트워크 오류 (시도 %d): %s", symbol, hour, attempt + 1, exc)
+                log.warning("%s 네트워크 오류 (시도 %d): %s", label, attempt + 1, exc)
                 self._sleep(self.retry_backoff * (attempt + 1))
                 continue
             try:
@@ -201,8 +226,13 @@ class KisQuoteClient:
                 return result
             if result.msg_cd in self.rate_limit_codes:
                 last_error = f"{result.msg_cd} {result.msg1}"
-                log.warning("%s %s 유량 초과 응답(%s) — %.1f초 후 재시도 (시도 %d)", symbol, hour, result.msg_cd, self.retry_backoff * (attempt + 1), attempt + 1)
+                log.warning("%s 유량 초과 응답(%s) — %.1f초 후 재시도 (시도 %d)", label, result.msg_cd, self.retry_backoff * (attempt + 1), attempt + 1)
                 self._sleep(self.retry_backoff * (attempt + 1))
+                continue
+            if result.msg_cd in self.transient_codes and transient_left > 0:
+                transient_left -= 1
+                log.warning("%s 서버 일시 오류(%s %s) — %.1f초 후 즉시 재시도 (남은 %d회)", label, result.msg_cd, result.msg1, self.transient_backoff, transient_left)
+                self._sleep(self.transient_backoff)
                 continue
             if (result.msg_cd in self.expired_codes or resp.status_code == 401) and not reissued:
                 log.warning("토큰 만료 응답(%s %s) — 재발급 후 재시도", resp.status_code, result.msg_cd)

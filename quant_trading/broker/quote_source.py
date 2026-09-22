@@ -22,3 +22,7 @@ class QuoteSource(Protocol):
     def intraday_candles(self, symbol: str, hour: str) -> QuoteResponse:
         """주식당일분봉조회 1페이지. hour 는 HHMMSS 기준시각, 과거 포함(내림차순)."""
         ...
+
+    def daily_candles(self, symbol: str, date_yyyymmdd: str, hour: str) -> QuoteResponse:
+        """주식일별분봉조회 1페이지 (과거 결손 보충 전용). date 는 API 경계 형식 YYYYMMDD."""
+        ...
