@@ -1,4 +1,4 @@
-# CLAUDE.md — QuantTrading 저장소 작업 규칙
+# CLAUDE.md - QuantTrading 저장소 작업 규칙
 
 > Claude Code는 모든 작업 전 이 파일과 docs/DECISIONS.md,
 > docs/ARCHITECTURE.md를 읽는다. 충돌 시 우선순위:
@@ -40,6 +40,7 @@
 - 이 저장소에서 Claude Code는 구현 담당이다. 설계·결정은 claude.ai 채팅에서 이루어지며, 그 결과는 docs/ 문서와 석현님이 전달하는 지시 문안으로만 이 저장소에 들어온다.
 - 지시 문안에 없는 설계 변경이 필요해 보이면 구현하지 말고 보고한다.
 - 보고에 쓰는 모든 파일명·경로·사실은 저장소에서 실제 확인한 것만 쓴다. 확인하지 않은 것은 쓰지 않거나 '추정'으로 명시한다. 문서가 언급하는 파일이라도 존재를 확인하기 전에는 존재를 전제하지 않는다.
+- 핵심 문건 3종(이 파일, docs/DECISIONS.md, docs/ARCHITECTURE.md)은 Claude Code가 수정하지 않는다. 정본은 설계 채팅이 작성하고 석현님이 직접 커밋한다. 지시 문안이 이 파일들의 수정을 요구하더라도 수정하지 말고 보고한다.
 
 ## PART D. 환경·도구 규칙
 - Python 3.12 고정 (.python-version). 시스템 Python을 쓰지 않는다.
@@ -57,7 +58,7 @@
 - 랩실 서버: 개발·테스트·백테스트. 코드 편집은 여기서만.
 - k12: 운영 전용. git pull + uv sync + systemd로만 갱신. 서버에서 직접 코드를 편집하지 않는다.
 - 본체·랩실은 k12의 Parquet 내보내기 폴더를 rsync로 pull한다. k12로 데이터를 밀어넣는 코드를 작성하지 않는다 (단방향).
-- systemd 유닛·슬라이스 원본은 deploy/systemd/. 적용은 scripts/deploy_units.sh (복사 → daemon-reload → 필요 시 restart)만 사용. 심볼릭 링크 금지.
+- systemd 유닛·슬라이스 원본은 deploy/systemd/. 적용은 scripts/deploy_units.sh (전 유닛 복사 → daemon-reload)만 사용. 스크립트는 재시작을 하지 않으며 즉시 재시작이 필요하면 사람이 명시적으로 수행한다. 심볼릭 링크 금지.
 - 개인 자동화 봇은 personal.slice 소속 + 자원 상한. 금지 시간대는 설정 파라미터로 관리한다.
 - 브로커 호출 테스트는 스텁 어댑터 기본. 백테스트·시뮬·실전은 같은 전략 코드를 호출하며, 전략 로직을 한쪽에만 복제·수정하지 않는다.
 - dry-run 후 산출물은 전부 삭제한다.
