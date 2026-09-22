@@ -7,6 +7,7 @@
   연속 N회(config)면 "수집 창 닫힘"으로 판정하고 즉시 중단 (수백 건 오류 양산 방지).
 - 장부 보호: ok/partial 행은 error·no_trade 로 덮어쓰지 않는다 (store.upsert_log). 재실행 기본 = 장부상 ok 가 아닌 종목만.
 - 소급(backfill): 주식일별분봉조회로 지정일 결손 종목을 보충. 15:20~15:29 미제공이므로 성공도 partial 로 기록.
+  응답 거래일이 대상일보다 과거면 그날 체결 0건(API 가 마지막 체결일을 반환) → no_trade + "무거래 - 최근 체결일". 미래면 error.
 - 종목 실패는 장부에 남기고 다음 종목으로 계속 진행한다 (전체 중단 금지 — 위 안전장치 발동은 예외).
 """
 from __future__ import annotations
@@ -31,6 +32,7 @@ from quant_trading.config import require
 log = logging.getLogger(__name__)
 
 DATE_MISMATCH = "date_mismatch"
+_NO_TRADE_MARK = "no_trade:"   # collect_pages → collect_symbol 내부 전달용 (소급에서 응답 거래일이 대상일보다 과거)
 BACKFILL_REASON = "backfill FHKST03010230: 15:20~15:29 마감 단일가 구간 미제공"
 
 
@@ -128,6 +130,7 @@ class PagingSpec:
     page_size: int
     max_pages: int
     source: str
+    past_date_is_no_trade: bool = False   # 소급(일별분봉): 응답 거래일 < 대상일 = 그날 체결 0건(마지막 체결일 반환) → no_trade
 
 
 # ------------------------------------------------------------ per symbol
@@ -148,6 +151,9 @@ def collect_pages(spec: PagingSpec, symbol: str, trade_date: str) -> tuple[dict[
         if pages == 1:
             top = max(str(r["stck_bsop_date"]) for r in raw)
             if top != api_date:
+                if spec.past_date_is_no_trade and top < api_date:
+                    return kept, pages, f"{_NO_TRADE_MARK}무거래 - 최근 체결일 {from_api_date(top)}"
+                # 대상일보다 미래(또는 당일분봉 스윕에서의 모든 불일치)는 이상 신호 → error
                 return kept, pages, f"{DATE_MISMATCH} api={from_api_date(top)} expected={trade_date}"
         todays = [r for r in raw if str(r["stck_bsop_date"]) == api_date]
         for r in todays:
@@ -177,6 +183,9 @@ def collect_symbol(
     except Exception as exc:  # noqa: BLE001 — 종목 단위 실패는 장부에 남기고 계속
         outcome.reason = f"exception {exc.__class__.__name__}: {exc}"
         log.exception("%s 수집 중 예외", symbol)
+        return outcome
+    if error and error.startswith(_NO_TRADE_MARK):
+        outcome.status, outcome.reason = STATUS_NO_TRADE, error[len(_NO_TRADE_MARK):]
         return outcome
     if error:
         outcome.reason = error
@@ -341,7 +350,7 @@ def backfill(
     api_date = to_api_date(trade_date)
     spec = PagingSpec(fetch=lambda symbol, hour: client.daily_candles(symbol, api_date, hour),
                       start_hhmm=ctx.start_hhmm, end_hhmm=ctx.end_hhmm, page_size=ctx.page_size,
-                      max_pages=ctx.max_pages, source=ctx.source)
+                      max_pages=ctx.max_pages, source=ctx.source, past_date_is_no_trade=True)
     for i, symbol in enumerate(targets, 1):
         t0 = datetime.now(ctx.tz)
         outcome = collect_symbol(spec, symbol, trade_date=trade_date, sessions=ctx.sessions,

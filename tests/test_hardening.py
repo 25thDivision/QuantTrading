@@ -198,6 +198,44 @@ def test_backfill_records_partial_with_reason_and_source(cfg, conn):
     assert conn.execute("SELECT COUNT(*) FROM candles_1m WHERE symbol='BBBBBB' AND trade_date='2026-09-11'").fetchone()[0] == 381
 
 
+def test_backfill_verdict_by_response_date(cfg, conn):
+    """일별분봉 응답 거래일이 대상일보다 과거 → no_trade(+최근 체결일), 미래 → date_mismatch error, 일치 → partial 적재."""
+    live = {s: day_rows(TODAY) + day_rows(PREV) for s in ("PASTXX", "FUTURE", "MATCHX")}
+    gap = tuple(f"15{m:02d}" for m in range(20, 30))
+    daily = {
+        "PASTXX": day_rows("20260905", end="1530"),                       # 9/11 체결 없음 → API 가 9/5 데이터 반환
+        "MATCHX": day_rows(PREV, end="1530", skip=gap),                   # 정상
+    }
+    # 대상일(9/11)보다 미래(9/14) 행을 돌려주는 이상 응답은 스텁의 날짜 필터를 우회해 고정 응답으로 주입
+    future = QuoteResponse("0", "MCA00000", "정상처리 되었습니다.", day_rows(TODAY, end="1530")[:120])
+    client = StubQuoteClient(live, daily_data=daily, failures={"FUTURE": future})
+    result = backfill(cfg, client, conn, ["PASTXX", "FUTURE", "MATCHX"], env="paper", target_date="2026-09-11", now=after_close())
+    by = {o.symbol: o for o in result.outcomes}
+    assert by["PASTXX"].status == "no_trade" and by["PASTXX"].reason == "무거래 - 최근 체결일 2026-09-05" and by["PASTXX"].candles == []
+    assert by["FUTURE"].status == "error" and by["FUTURE"].reason == "date_mismatch api=2026-09-14 expected=2026-09-11"
+    assert by["MATCHX"].status == "partial" and by["MATCHX"].reason == BACKFILL_REASON and len(by["MATCHX"].candles) == 381
+    ledger = {r["symbol"]: (r["status"], r["reason"]) for r in conn.execute("SELECT symbol, status, reason FROM collector_log WHERE trade_date='2026-09-11'")}
+    assert ledger["PASTXX"] == ("no_trade", "무거래 - 최근 체결일 2026-09-05")
+    assert ledger["FUTURE"][0] == "error" and ledger["MATCHX"][0] == "partial"
+    assert conn.execute("SELECT COUNT(*) FROM candles_1m WHERE symbol IN ('PASTXX','FUTURE')").fetchone()[0] == 0
+
+
+def test_backfill_no_trade_does_not_clobber_partial(cfg, conn):
+    upsert_log(conn, entry("PASTXX", "partial", "run before window end", date="2026-09-11"))
+    client = StubQuoteClient({"PASTXX": day_rows(TODAY) + day_rows(PREV)}, daily_data={"PASTXX": day_rows("20260905", end="1530")})
+    backfill(cfg, client, conn, ["PASTXX"], env="paper", target_date="2026-09-11", now=after_close())
+    row = conn.execute("SELECT status, reason FROM collector_log WHERE symbol='PASTXX'").fetchone()
+    assert (row["status"], row["reason"]) == ("partial", "run before window end")   # 장부 보호: no_trade 는 partial 을 덮지 않음
+
+
+def test_intraday_sweep_keeps_past_date_as_error(cfg, conn):
+    """당일분봉 스윕은 과거 날짜 응답도 그대로 date_mismatch error (소급에만 무거래 판정 적용)."""
+    client = StubQuoteClient({"AAAAAA": day_rows(TODAY) + day_rows(PREV), "OLDOLD": day_rows(PREV)})
+    result = sweep(cfg, client, conn, ["AAAAAA", "OLDOLD"], env="paper", now=after_close())
+    by = {o.symbol: o for o in result.outcomes}
+    assert by["OLDOLD"].status == "error" and by["OLDOLD"].reason.startswith("date_mismatch api=2026-09-11")
+
+
 def test_backfill_refuses_live_date(cfg, conn):
     client = StubQuoteClient({"AAAAAA": day_rows(TODAY) + day_rows(PREV)})
     with pytest.raises(SweepAborted, match="수집 창이 살아 있는"):
