@@ -8,6 +8,7 @@
 - 장부 보호: ok/partial 행은 error·no_trade 로 덮어쓰지 않는다 (store.upsert_log). 재실행 기본 = 장부상 ok 가 아닌 종목만.
   보호로 기록하지 못한 error 결과는 실패가 아니라 "보호됨"으로 따로 센다 (결과 집계에만 존재, 사유도 API 결과에서 집계).
 - 소급(backfill): 주식일별분봉조회로 지정일 결손 종목을 보충. 15:20~15:29 미제공이므로 성공도 partial 로 기록.
+  대상 = 현재 종목정보파일의 ok 아닌 종목 ∪ 그 날짜 장부의 ok 아닌 종목 (파일에서 빠진 종목의 error 잔류 방지).
   응답 거래일이 대상일보다 과거면 그날 체결 0건(API 가 마지막 체결일을 반환) → no_trade + "무거래 - 최근 체결일". 미래면 error.
 - 종목 실패는 장부에 남기고 다음 종목으로 계속 진행한다 (전체 중단 금지 - 위 안전장치 발동은 예외).
 """
@@ -28,7 +29,7 @@ from quant_trading.collector.models import (
     SymbolOutcome,
 )
 from quant_trading.collector.sessions import Session, load_sessions, session_for, sweep_window
-from quant_trading.collector.store import ok_symbols, upsert_candles, upsert_log
+from quant_trading.collector.store import non_ok_symbols, ok_symbols, upsert_candles, upsert_log
 from quant_trading.config import require
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class SweepResult:
     mode: str = "intraday"          # intraday | backfill
     outcomes: list[SymbolOutcome] = field(default_factory=list)
     skipped: int = 0                # 장부상 ok 라 건너뛴 종목 수 (선택 재시도)
+    off_file: int = 0               # 소급 대상 중 현재 종목정보파일에 없는 종목 수 (장부의 ok 아닌 행에서 온 것)
 
     @property
     def status_counts(self) -> dict[str, int]:
@@ -341,8 +343,13 @@ def backfill(
     target_date: str,
     now: datetime | None = None,
     retry_only: bool = True,
+    include_ledger: bool = False,
 ) -> SweepResult:
-    """주식일별분봉조회로 지정일(ISO/YYYYMMDD) 결손 종목을 보충. 성공은 partial(15:20~15:29 미제공) 로 기록."""
+    """주식일별분봉조회로 지정일(ISO/YYYYMMDD) 결손 종목을 보충. 성공은 partial(15:20~15:29 미제공) 로 기록.
+
+    include_ledger=True (symbols 가 종목정보파일 전체일 때 호출자가 지정) 이고 선택 재시도면, 그 날짜 장부의 ok 아닌
+    종목 중 symbols 에 없는 것(수집일 이후 파일에서 빠진 종목)도 대상에 더한다. 종목명이 없으므로 코드만으로 처리한다.
+    """
     ctx = _context(cfg, "backfill_api")
     now = now.astimezone(ctx.tz) if now else datetime.now(ctx.tz)
     if not target_date:
@@ -359,9 +366,15 @@ def backfill(
         raise SweepAborted(f"{trade_date} 는 수집 창이 살아 있는 거래일 - 당일분봉 스윕(기본 명령)을 사용하십시오")
 
     targets, skipped = select_targets(conn, symbols, trade_date, retry_only=retry_only)
+    off_file: list[str] = []
+    if include_ledger and retry_only:
+        known = set(symbols)
+        off_file = sorted(s for s in non_ok_symbols(conn, trade_date, KIND_INTRADAY_1M) if s not in known)
+        targets = targets + off_file
     result = SweepResult(run_id=run_id, env=env, trade_date=trade_date, started_at=now, finished_at=now,
-                         mode="backfill", skipped=skipped)
-    log.info("소급 시작 run_id=%s 거래일=%s 대상=%d (건너뜀 %d)", run_id, trade_date, len(targets), skipped)
+                         mode="backfill", skipped=skipped, off_file=len(off_file))
+    log.info("소급 시작 run_id=%s 거래일=%s 대상=%d (건너뜀 %d, 파일 미포함 %d)", run_id, trade_date, len(targets), skipped,
+             len(off_file))
     api_date = to_api_date(trade_date)
     spec = PagingSpec(fetch=lambda symbol, hour: client.daily_candles(symbol, api_date, hour),
                       start_hhmm=ctx.start_hhmm, end_hhmm=ctx.end_hhmm, page_size=ctx.page_size,
@@ -398,7 +411,8 @@ def format_summary(result: SweepResult, error_reasons: dict[str, int], *, note: 
         f"[collector {result.env}] {result.trade_date} {label} 종료: 성공 {c.get(STATUS_OK, 0)} / 부분 {c.get(STATUS_PARTIAL, 0)}"
         f" / 무거래 {c.get(STATUS_NO_TRADE, 0)} / 실패 {c.get(STATUS_ERROR, 0)}"
         f"{'(' + reasons + ')' if reasons else ''} / 보호됨 {c.get(STATUS_PROTECTED, 0)}"
-        f"{'(' + protected + ')' if protected else ''} / 건너뜀 {result.skipped}(기존 ok) / 행 {result.rows}"
+        f"{'(' + protected + ')' if protected else ''} / 건너뜀 {result.skipped}(기존 ok)"
+        f"{f' / 파일 미포함 {result.off_file}' if result.off_file else ''} / 행 {result.rows}"
         f" / 종목 {len(result.outcomes)} / 소요 {mm}분 {ss}초"
         f"{' / 경고: ' + note if note else ''}"
     )

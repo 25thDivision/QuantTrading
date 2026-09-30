@@ -74,6 +74,14 @@ def ok_symbols(conn: sqlite3.Connection, trade_date: str, kind: str = KIND_INTRA
     return {r["symbol"] for r in rows}
 
 
+def non_ok_symbols(conn: sqlite3.Connection, trade_date: str, kind: str = KIND_INTRADAY_1M) -> set[str]:
+    """해당 날짜·종류에서 장부상 ok 가 아닌 종목 - 소급 대상 집합의 장부 쪽 (종목정보파일에서 빠진 종목 포함)."""
+    rows = conn.execute(
+        "SELECT symbol FROM collector_log WHERE trade_date = ? AND kind = ? AND status != 'ok'", (trade_date, kind)
+    ).fetchall()
+    return {r["symbol"] for r in rows}
+
+
 def run_summary(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
     """run_id 기준 장부 집계 - 디스코드 한 줄 보고의 근거."""
     rows = conn.execute(

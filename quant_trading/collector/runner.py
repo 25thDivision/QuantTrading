@@ -111,7 +111,9 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_on
         if limit:
             symbols = symbols[:limit]
         if mode == "backfill":
-            result = backfill(cfg, client, conn, symbols, env=env, target_date=expected_date or "", now=now, retry_only=retry_only)
+            # 장부 쪽 대상(파일에서 빠진 종목)은 종목정보파일 전체를 도는 소급에만 더한다 (--symbols·--limit 지정 시 제외)
+            result = backfill(cfg, client, conn, symbols, env=env, target_date=expected_date or "", now=now,
+                              retry_only=retry_only, include_ledger=loaded is not None and not limit)
         else:
             result = sweep(cfg, client, conn, symbols, env=env, expected_date=expected_date, now=now, retry_only=retry_only)
         if loaded is not None:
