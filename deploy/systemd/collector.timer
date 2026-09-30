@@ -1,11 +1,11 @@
-# QuantTrading 수집기 타이머 - 애프터마켓 종료(20:00) 후 매 거래일 실행.
+# QuantTrading 수집기 타이머 - 애프터마켓 종료(20:00) 후 매일 실행.
 # OnCalendar 시각은 config/config.yaml 의 collector.sweep_after("20:30") 와 반드시 일치시킬 것 (수동 동기).
-# 휴장일(평일)에도 기동되지만 수집기는 API 가 돌려주는 최근 거래일을 멱등 재적재하므로 무해하다.
+# 휴장일·주말 기동은 최근 거래일의 ok 아닌 종목 재시도(무해, 결정 11)
 [Unit]
 Description=Daily trigger for QuantTrading collector (after KRX aftermarket close)
 
 [Timer]
-OnCalendar=Mon..Fri *-*-* 20:30:00 Asia/Seoul
+OnCalendar=*-*-* 20:30:00 Asia/Seoul
 Persistent=true
 AccuracySec=1min
 
