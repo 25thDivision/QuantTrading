@@ -1,4 +1,4 @@
-"""수정 3 견고화 테스트 — 날짜 정규화·장부 보호·연속 date_mismatch 중단·선택 재시도 대상·소급(partial)·일시 오류 재시도."""
+"""수정 3 견고화 테스트 - 날짜 정규화·장부 보호·연속 date_mismatch 중단·선택 재시도 대상·소급(partial)·일시 오류 재시도."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -113,7 +113,7 @@ def test_sweep_after_window_closed_does_not_clobber_ok_rows(cfg, conn):
 
 # ------------------------------------------------------ 연속 date_mismatch 중단
 class FlippingClient:
-    """처음 probe 는 금요일, 이후 호출은 월요일 데이터를 돌려주는 스텁 — 순회 도중 수집 창이 닫힌 상황."""
+    """처음 probe 는 금요일, 이후 호출은 월요일 데이터를 돌려주는 스텁 - 순회 도중 수집 창이 닫힌 상황."""
 
     def __init__(self) -> None:
         self.calls = 0

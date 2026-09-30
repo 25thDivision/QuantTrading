@@ -1,4 +1,4 @@
-"""마감 후 REST 스윕 — 종목 순회 × 주식당일분봉조회 페이징 → candles_1m 적재 → collector_log 기록 (결정 11).
+"""마감 후 REST 스윕 - 종목 순회 × 주식당일분봉조회 페이징 → candles_1m 적재 → collector_log 기록 (결정 11).
 
 - 날짜: 내부·DB·로그는 ISO(YYYY-MM-DD). API 경계(stck_bsop_date 비교, FID_INPUT_DATE_1)에서만 YYYYMMDD.
 - 페이징: 수집 창 종료 시각(예: 20:00)부터 30건씩 거슬러 내려가 창 시작(09:00)까지. 전일 행이 섞이면 버리고 종료.
@@ -8,7 +8,7 @@
 - 장부 보호: ok/partial 행은 error·no_trade 로 덮어쓰지 않는다 (store.upsert_log). 재실행 기본 = 장부상 ok 가 아닌 종목만.
 - 소급(backfill): 주식일별분봉조회로 지정일 결손 종목을 보충. 15:20~15:29 미제공이므로 성공도 partial 로 기록.
   응답 거래일이 대상일보다 과거면 그날 체결 0건(API 가 마지막 체결일을 반환) → no_trade + "무거래 - 최근 체결일". 미래면 error.
-- 종목 실패는 장부에 남기고 다음 종목으로 계속 진행한다 (전체 중단 금지 — 위 안전장치 발동은 예외).
+- 종목 실패는 장부에 남기고 다음 종목으로 계속 진행한다 (전체 중단 금지 - 위 안전장치 발동은 예외).
 """
 from __future__ import annotations
 
@@ -112,7 +112,7 @@ def resolve_trade_date(client: QuoteSource, symbols: list[str], end_hhmm: str, p
     for symbol in symbols[:probe_limit]:
         try:
             resp = client.intraday_candles(symbol, end_hhmm + "00")
-        except Exception as exc:  # noqa: BLE001 — 판별 단계는 다음 종목으로 계속
+        except Exception as exc:  # noqa: BLE001 - 판별 단계는 다음 종목으로 계속
             last = f"{symbol}: {exc!r}"
             continue
         dates = [str(r["stck_bsop_date"]) for r in resp.rows if r.get("stck_bsop_date")]
@@ -180,7 +180,7 @@ def collect_symbol(
     outcome = SymbolOutcome(symbol=symbol, status=STATUS_ERROR)
     try:
         kept, outcome.pages, error = collect_pages(spec, symbol, trade_date)
-    except Exception as exc:  # noqa: BLE001 — 종목 단위 실패는 장부에 남기고 계속
+    except Exception as exc:  # noqa: BLE001 - 종목 단위 실패는 장부에 남기고 계속
         outcome.reason = f"exception {exc.__class__.__name__}: {exc}"
         log.exception("%s 수집 중 예외", symbol)
         return outcome
@@ -279,7 +279,7 @@ def sweep(
     if expected and expected != trade_date:
         raise SweepAborted(
             f"기대 거래일 {expected} 과 API 반환 거래일 {trade_date} 이 다릅니다 "
-            "(주식당일분봉조회는 최근 거래일만 제공. 과거 결손은 --backfill) — 순회 전 중단"
+            "(주식당일분봉조회는 최근 거래일만 제공. 과거 결손은 --backfill) - 순회 전 중단"
         )
 
     # 장중 실행이면 기준시각을 현재 분으로 낮춘다 (미래 분은 API 가 현재가로 채워 돌려주므로)
@@ -308,7 +308,7 @@ def sweep(
         if consecutive_mismatch >= ctx.max_consecutive_mismatch:
             result.finished_at = datetime.now(ctx.tz)
             raise SweepAborted(
-                f"수집 창 닫힘 판정: date_mismatch 연속 {consecutive_mismatch}회 (API 거래일이 {trade_date} 에서 바뀜) — "
+                f"수집 창 닫힘 판정: date_mismatch 연속 {consecutive_mismatch}회 (API 거래일이 {trade_date} 에서 바뀜) - "
                 f"{i}/{len(targets)} 종목에서 중단, 진행 {result.status_counts}, 마지막 사유: {outcome.reason}"
             )
     result.finished_at = datetime.now(ctx.tz)
@@ -338,10 +338,10 @@ def backfill(
         raise SweepAborted("종목 목록이 비어 있습니다")
     run_id = f"{now.strftime('%Y%m%dT%H%M%S')}-{env}-backfill"
 
-    # 수집 창이 살아 있는 날짜(API 의 최근 거래일)면 당일분봉 우선 — 소급 API 는 15:20~15:29 를 못 주므로 거부
+    # 수집 창이 살아 있는 날짜(API 의 최근 거래일)면 당일분봉 우선 - 소급 API 는 15:20~15:29 를 못 주므로 거부
     live_date = resolve_trade_date(client, symbols, ctx.end_hhmm, ctx.probe_symbols)
     if live_date == trade_date:
-        raise SweepAborted(f"{trade_date} 는 수집 창이 살아 있는 거래일 — 당일분봉 스윕(기본 명령)을 사용하십시오")
+        raise SweepAborted(f"{trade_date} 는 수집 창이 살아 있는 거래일 - 당일분봉 스윕(기본 명령)을 사용하십시오")
 
     targets, skipped = select_targets(conn, symbols, trade_date, retry_only=retry_only)
     result = SweepResult(run_id=run_id, env=env, trade_date=trade_date, started_at=now, finished_at=now,

@@ -1,4 +1,4 @@
-"""candles_1m / collector_log 적재 — UPSERT 로 재실행 멱등."""
+"""candles_1m / collector_log 적재 - UPSERT 로 재실행 멱등."""
 from __future__ import annotations
 
 import sqlite3
@@ -47,7 +47,7 @@ def upsert_candles(conn: sqlite3.Connection, candles: list[Candle]) -> int:
 
 def upsert_log(conn: sqlite3.Connection, entry: LogEntry, *, protect: bool = True) -> bool:
     """장부 기록. protect=True 면 기존 행이 ok/partial 일 때 그보다 낮은 상태(error·no_trade, ok→partial)로
-    덮어쓰지 않는다 — 수집 창이 닫힌 뒤의 date_mismatch 재실행이 정상 장부를 지우는 사고 방지. 기록 여부 반환."""
+    덮어쓰지 않는다 - 수집 창이 닫힌 뒤의 date_mismatch 재실행이 정상 장부를 지우는 사고 방지. 기록 여부 반환."""
     if protect:
         row = conn.execute(
             "SELECT status FROM collector_log WHERE trade_date = ? AND symbol = ? AND kind = ?",
@@ -67,7 +67,7 @@ def upsert_log(conn: sqlite3.Connection, entry: LogEntry, *, protect: bool = Tru
 
 
 def ok_symbols(conn: sqlite3.Connection, trade_date: str, kind: str = KIND_INTRADAY_1M) -> set[str]:
-    """해당 날짜·종류에서 장부상 ok 인 종목 — 선택 재시도(기본 재실행)의 제외 집합."""
+    """해당 날짜·종류에서 장부상 ok 인 종목 - 선택 재시도(기본 재실행)의 제외 집합."""
     rows = conn.execute(
         "SELECT symbol FROM collector_log WHERE trade_date = ? AND kind = ? AND status = 'ok'", (trade_date, kind)
     ).fetchall()
@@ -75,7 +75,7 @@ def ok_symbols(conn: sqlite3.Connection, trade_date: str, kind: str = KIND_INTRA
 
 
 def run_summary(conn: sqlite3.Connection, run_id: str) -> dict[str, Any]:
-    """run_id 기준 장부 집계 — 디스코드 한 줄 보고의 근거."""
+    """run_id 기준 장부 집계 - 디스코드 한 줄 보고의 근거."""
     rows = conn.execute(
         "SELECT status, reason, rows FROM collector_log WHERE run_id = ? AND kind = ?", (run_id, KIND_INTRADAY_1M)
     ).fetchall()

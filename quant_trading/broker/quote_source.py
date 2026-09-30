@@ -1,4 +1,4 @@
-"""시세 조회 어댑터 공통 인터페이스 (실전/모의/스텁 전환은 설정으로 — ARCHITECTURE 1절 broker/)."""
+"""시세 조회 어댑터 공통 인터페이스 (실전/모의/스텁 전환은 설정으로 - ARCHITECTURE 1절 broker/)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

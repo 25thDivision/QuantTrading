@@ -1,4 +1,4 @@
-"""날짜 정책 — 내부·DB·로그는 ISO(YYYY-MM-DD)로 통일하고, API 경계에서만 YYYYMMDD 로 변환한다."""
+"""날짜 정책 - 내부·DB·로그는 ISO(YYYY-MM-DD)로 통일하고, API 경계에서만 YYYYMMDD 로 변환한다."""
 from __future__ import annotations
 
 import re

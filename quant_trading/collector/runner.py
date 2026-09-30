@@ -1,4 +1,4 @@
-"""스윕 실행 오케스트레이션 — 설정 → 어댑터 → 종목 목록 → 스윕 → 장부 집계 → 디스코드.
+"""스윕 실행 오케스트레이션 - 설정 → 어댑터 → 종목 목록 → 스윕 → 장부 집계 → 디스코드.
 
 알림 역할 분담: 일상 요약은 collector 채널(성공·실패 무관 매일), 경고는 alerts 채널에 별도 한 줄
 (분봉 실패 종목 ≥ 1 / 종목 목록 캐시 폴백 / 스윕 중단). 요약과 경고는 중복이 아니라 일지와 사이렌이다.
@@ -37,7 +37,7 @@ def alert_messages(result: SweepResult, loaded: SymbolLoadResult | None, error_r
 def _notify(cfg: dict[str, Any], purpose: str, message: str) -> None:
     try:
         discord.send(message, cfg, purpose=purpose)
-    except Exception as exc:  # noqa: BLE001 — 알림 실패가 수집을 막지 않는다
+    except Exception as exc:  # noqa: BLE001 - 알림 실패가 수집을 막지 않는다
         log.warning("알림 전송 중 예외(%s): %s", purpose, exc)
 
 
@@ -60,7 +60,7 @@ def run_sweep(
         return _run(cfg, ccfg, env=env, symbols=symbols, limit=limit, expected_date=expected_date, notify=notify, now=now,
                     retry_only=retry_only, mode=mode)
     except Exception as exc:
-        # 스윕 중단 경로 — 중단 지점에서 alerts 로 발송 시도 후 그대로 전파 (종료코드 2 는 진입점이 결정)
+        # 스윕 중단 경로 - 중단 지점에서 alerts 로 발송 시도 후 그대로 전파 (종료코드 2 는 진입점이 결정)
         if notify:
             _notify(cfg, discord.PURPOSE_ALERTS, f"[collector {env}] 중단: {exc.__class__.__name__}: {exc}")
         raise

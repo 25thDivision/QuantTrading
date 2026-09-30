@@ -1,9 +1,9 @@
-"""SQLite 스키마 — Phase 0-B 범위는 수집 관련 두 테이블(candles_1m, collector_log)만.
+"""SQLite 스키마 - Phase 0-B 범위는 수집 관련 두 테이블(candles_1m, collector_log)만.
 
 설계 근거 (DECISIONS.md 결정 11, ARCHITECTURE.md 2절):
 - candles_1m: 원본가 불변 저장. (symbol, ts) 복합 PK 로 재실행 멱등(UPSERT). ts 는 API 분봉 라벨을
   그대로 옮긴 거래소 현지시각이며, session 은 config 세션 테이블에서 파생해 세션 구분을 바로 할 수 있게 한다.
-  amount_cum 은 API 가 주는 당일 누적 거래대금 원본이다 (분 거래대금은 읽기 시점에 차분 — 원본 보존 원칙).
+  amount_cum 은 API 가 주는 당일 누적 거래대금 원본이다 (분 거래대금은 읽기 시점에 차분 - 원본 보존 원칙).
 - collector_log: 수집 완전성은 데이터 존재가 아니라 장부로 판정한다. (trade_date, symbol, kind) PK,
   상태(ok/partial/no_trade/error)·사유·행수·체결행수·페이지수·적재 구간·시각·run_id.
 """
@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS candles_1m (
     ts           TEXT    NOT NULL,   -- 'YYYY-MM-DD HH:MM' 거래소 현지시각, API 분봉 라벨(stck_cntg_hour) 그대로
     trade_date   TEXT    NOT NULL,   -- 'YYYY-MM-DD' (stck_bsop_date)
     session      TEXT,               -- config 세션 테이블에서 파생 (continuous/auction_close/aftermarket ...). 매핑 불가 시 NULL
-    open         INTEGER NOT NULL,   -- 원본가(원). 수정주가 미저장 — 결정 11
+    open         INTEGER NOT NULL,   -- 원본가(원). 수정주가 미저장 - 결정 11
     high         INTEGER NOT NULL,
     low          INTEGER NOT NULL,
     close        INTEGER NOT NULL,   -- stck_prpr

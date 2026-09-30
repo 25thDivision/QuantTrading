@@ -1,4 +1,4 @@
-"""세션 테이블(config markets.<market>.sessions) 파생 유틸 — 시간 참조는 전부 여기서 파생한다 (결정 9)."""
+"""세션 테이블(config markets.<market>.sessions) 파생 유틸 - 시간 참조는 전부 여기서 파생한다 (결정 9)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -48,7 +48,7 @@ def session_for(sessions: list[Session], hhmm: str) -> str | None:
     """분봉 라벨(HHMM)이 속한 세션 이름.
 
     1차: start <= t < end (분봉 라벨 = 해당 분의 시작으로 간주)
-    2차: start < t <= end (세션 종료 시각에 찍히는 단일가 체결 행 — 15:30 종가, 20:00 애프터마켓 종료)
+    2차: start < t <= end (세션 종료 시각에 찍히는 단일가 체결 행 - 15:30 종가, 20:00 애프터마켓 종료)
     """
     t = time(int(hhmm[:2]), int(hhmm[2:4]))
     for s in sessions:

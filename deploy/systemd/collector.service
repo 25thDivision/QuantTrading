@@ -1,6 +1,6 @@
-# QuantTrading 분봉 스윕 수집기 (결정 11) — k12 전용 oneshot 서비스. collector.timer 가 매일 기동한다.
+# QuantTrading 분봉 스윕 수집기 (결정 11) - k12 전용 oneshot 서비스. collector.timer 가 매일 기동한다.
 # 배포: scripts/deploy_units.sh 실행 = deploy/systemd/*.service|*.timer|*.slice 를 /etc/systemd/system/ 에 복사 → daemon-reload.
-#       restart 는 하지 않으므로(타이머 구동) 새 정의는 다음 예약 실행부터 적용. 심볼릭 링크 금지 — 결정 8
+#       restart 는 하지 않으므로(타이머 구동) 새 정의는 다음 예약 실행부터 적용. 심볼릭 링크 금지 - 결정 8
 [Unit]
 Description=QuantTrading minute-candle sweep collector (decision 11)
 After=network-online.target

@@ -1,4 +1,4 @@
-# QuantTrading 설정 서식 — config/config.yaml 과 동일 내용 (동기 유지). 시크릿은 .env 별도
+# QuantTrading 설정 서식 - config/config.yaml 과 동일 내용 (동기 유지). 시크릿은 .env 별도
 # 모든 수치 파라미터는 이 파일에서만 관리한다 (DECISIONS.md 원칙 4, CLAUDE.md PART D)
 
 account:            # 계좌 통합 파라미터
@@ -12,45 +12,45 @@ common:             # 시장 무관 공식·규칙
 markets:
   kospi:            # 코스피 인스턴스 파라미터 (2026 변동성 국면 보정값)
     timezone: Asia/Seoul
-    sessions:       # 세션 테이블 — 1급 구조 (결정 9). 전부 정의하되 거래 활성은 tradable로 통제. 2026-09-14 제도 개편 반영 (ARCHITECTURE.md 5절)
+    sessions:       # 세션 테이블 - 1급 구조 (결정 9). 전부 정의하되 거래 활성은 tradable로 통제. 2026-09-14 제도 개편 반영 (ARCHITECTURE.md 5절)
       - {name: auction_open,  span: "08:30-09:00", kind: auction,    tradable: false}
       - {name: continuous,    span: "09:00-15:20", kind: continuous, tradable: true}   # v1 유일 거래 세션
       - {name: auction_close, span: "15:20-15:30", kind: auction,    tradable: false}
       - {name: after_fixed,   span: "15:40-16:00", kind: fixed,      tradable: false}  # 존치 여부 확인 필요 (DECISIONS.md 11절)
       - {name: aftermarket,   span: "16:00-20:00", kind: continuous, tradable: false}  # KRX 애프터마켓 (2026-09-14~, 시간외단일가 대체). 수집 대상
-      # KRX 프리마켓은 추후 도입 보도 — 시행 확인 후 추가
+      # KRX 프리마켓은 추후 도입 보도 - 시행 확인 후 추가
     day:  {stop: {mode: vol_linked, mult: 0.5, clamp: [-0.03, -0.06]}, max_positions: 1, price_cap: 200_000}
     swing: {stop: -0.15, positions: 7, price_cap: 160_000, leverage_slot: {max_ratio: 0.5, stop: -0.20}}
-    universe:       # 미확정 — DECISIONS.md 11절 참조
-  us:               # 미국 인스턴스 — 독자 백테스트로 별도 확정 (미정)
+    universe:       # 미확정 - DECISIONS.md 11절 참조
+  us:               # 미국 인스턴스 - 독자 백테스트로 별도 확정 (미정)
     timezone: America/New_York   # 세션은 현지 시간대로 정의, 서머타임은 라이브러리가 처리
-calendar:           # 미확정 — DECISIONS.md 11절 참조 (시장 캘린더 — 휴장일·단축일·변경일, 소스 미정)
+calendar:           # 미확정 - DECISIONS.md 11절 참조 (시장 캘린더 - 휴장일·단축일·변경일, 소스 미정)
 parking:
-  whitelist:        # 미확정 — DECISIONS.md 11절 참조
+  whitelist:        # 미확정 - DECISIONS.md 11절 참조
   enabled_for: [swing]
 personal_bot:       # 개인 자동화 봇 (결정 8·9)
   blocked: derived  # 활성 인스턴스의 거래 세션 합집합 + 전후 버퍼 (고정값 기입 금지)
   buffer_minutes: 30
 
-collector:          # 분봉 스윕 수집기 (결정 11) — 마감 후 REST 일괄 스윕
+collector:          # 분봉 스윕 수집기 (결정 11) - 마감 후 REST 일괄 스윕
   market: kospi
   kind: intraday_1m
   sweep_after: "20:30"          # k12 타이머 실행 시각 (거래소 현지시각). deploy/systemd/collector.timer 의 OnCalendar 와 반드시 일치시킬 것
   sessions: [continuous, auction_close, after_fixed, aftermarket]   # 수집 창 = 이 세션들의 최소 시작(09:00) ~ 최대 종료(20:00). 시가 단일가(08:30~09:00)는 분봉 없음
-  rate_per_sec:                 # 초당 호출 한도 (한국투자증권 공지 "API 호출 유량 안내" 2026-04-20 기준: 실전 18건/초, 모의 1건/초 — 0-A 실측 EGW00201 로 확인)
+  rate_per_sec:                 # 초당 호출 한도 (한국투자증권 공지 "API 호출 유량 안내" 2026-04-20 기준: 실전 18건/초, 모의 1건/초 - 0-A 실측 EGW00201 로 확인)
     real: 15                    # 실측 한도 18 대비 3건 여유 (분산 정책·재시도 몫)
     paper: 1                    # 실측 한도 1 그대로 (여유 없음 → 리미터가 정확히 1초 간격 유지, 초과 시 EGW00201 재시도)
   api:
     tr_id: FHKST03010200        # 주식당일분봉조회 (1회 최대 30건, 당일만 제공)
     path: /uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice
     market_div_code: J          # J: KRX
-    include_past: "Y"           # FID_PW_DATA_INCU_YN — 기준시각 이전 행 포함(내림차순)
+    include_past: "Y"           # FID_PW_DATA_INCU_YN - 기준시각 이전 행 포함(내림차순)
     page_size: 30
   backfill_api:                 # --backfill 전용: 주식일별분봉조회 (1회 최대 120건, 약 1년 소급, 15:20~15:29 미제공 → 결과는 partial)
     tr_id: FHKST03010230
     path: /uapi/domestic-stock/v1/quotations/inquire-time-dailychartprice
     page_size: 120
-    fake_tick: ""               # FID_FAKE_TICK_INCU_YN — 공백 필수 (공식 문서)
+    fake_tick: ""               # FID_FAKE_TICK_INCU_YN - 공백 필수 (공식 문서)
   db_path: data/quant_trading.sqlite3   # 저장소 루트 기준 상대 경로 (data/ 는 git 제외)
   max_consecutive_date_mismatch: 5   # 순회 중 date_mismatch 가 이만큼 연속되면 "수집 창 닫힘"(API 거래일 변경)으로 판정하고 즉시 중단
   max_pages_margin: 2           # 최대 페이지 = ceil(수집 창 분 수 / page_size) + margin
@@ -78,9 +78,9 @@ broker:
       refresh_margin_minutes: 30  # 만료 30분 전부터 재발급
       issue_retry_wait_sec: 61  # 발급 1분당 1회 제한(EGW00133) 시 대기 후 1회 재시도
       issue_limit_codes: [EGW00133]
-      expired_codes: [EGW00123] # 만료 토큰 응답 코드 — 해당 시 캐시 무효화 후 1회 재발급
-    rate_limit_codes: [EGW00201]  # 초당 거래건수 초과 — 백오프 재시도
-    transient_codes: [EGW00316]   # 서버 일시 오류 — 해당 페이지를 transient_backoff_sec 간격으로 transient_retries 회 즉시 재시도 후 실패면 error 기록
+      expired_codes: [EGW00123] # 만료 토큰 응답 코드 - 해당 시 캐시 무효화 후 1회 재발급
+    rate_limit_codes: [EGW00201]  # 초당 거래건수 초과 - 백오프 재시도
+    transient_codes: [EGW00316]   # 서버 일시 오류 - 해당 페이지를 transient_backoff_sec 간격으로 transient_retries 회 즉시 재시도 후 실패면 error 기록
     transient_retries: 2
     transient_backoff_sec: 2.0
     timeout_sec: 15
@@ -88,7 +88,7 @@ broker:
     retry_backoff_sec: 2.0
 
 notify:
-  discord:                    # 채널 4분할 — 용도(purpose)별 웹훅 환경변수 이름. 값은 .env (미설정 변수는 경고 로그 후 생략)
+  discord:                    # 채널 4분할 - 용도(purpose)별 웹훅 환경변수 이름. 값은 .env (미설정 변수는 경고 로그 후 생략)
     webhooks:
       collector: DISCORD_WEBHOOK_COLLECTOR   # 수집 일상 요약 (성공·실패 무관 매일)
       paper: DISCORD_WEBHOOK_PAPER           # 모의·페이퍼 (Phase 4~5, 자리만)

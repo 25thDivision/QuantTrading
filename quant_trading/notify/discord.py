@@ -1,4 +1,4 @@
-"""디스코드 웹훅 알림 기초 — 용도(purpose)별 채널로 한 줄 메시지 전송.
+"""디스코드 웹훅 알림 기초 - 용도(purpose)별 채널로 한 줄 메시지 전송.
 
 용도 → 환경변수 이름 매핑은 config notify.discord.webhooks 에, 값은 .env 에만 둔다.
 해당 변수가 비어 있으면 경고 로그만 남기고 생략한다 (알림 실패가 본 작업을 막지 않는다).
@@ -33,7 +33,7 @@ def webhook_url(cfg: dict[str, Any], purpose: str) -> tuple[str, str]:
 def send(message: str, cfg: dict[str, Any], *, purpose: str, session: requests.Session | None = None) -> bool:
     env_name, url = webhook_url(cfg, purpose)
     if not url:
-        log.warning("디스코드 웹훅 미설정(%s=%s) — 알림 생략: %s", purpose, env_name, message)
+        log.warning("디스코드 웹훅 미설정(%s=%s) - 알림 생략: %s", purpose, env_name, message)
         return False
     timeout = float(require(cfg, "notify", "discord", "timeout_sec"))
     http = session or requests

@@ -1,4 +1,4 @@
-"""종목 목록 — 한국투자증권 종목정보파일(kospi_code.mst) 방식 (결정 11: 코스피 보통주 전 종목 + 상장 ETF, ETN 제외).
+"""종목 목록 - 한국투자증권 종목정보파일(kospi_code.mst) 방식 (결정 11: 코스피 보통주 전 종목 + 상장 ETF, ETN 제외).
 
 출처
 - 다운로드 URL·정제 예제: 공식 GitHub koreainvestment/open-trading-api, stocks_info/kis_kospi_code_mst.py
@@ -32,7 +32,7 @@ PART1_LEN = 61          # 단축코드 9 + 표준코드 12 + 한글종목명 40
 PART2_LEN = 227         # MASTER_FIELDS 폭 합계
 LINE_LEN = PART1_LEN + PART2_LEN
 
-# (필드명, 폭) — 종목마스터정보(코스피).h 의 ST_KSP_CODE 순서 그대로
+# (필드명, 폭) - 종목마스터정보(코스피).h 의 ST_KSP_CODE 순서 그대로
 MASTER_FIELDS: tuple[tuple[str, int], ...] = (
     ("scrt_grp_cls_code", 2), ("avls_scal_cls_code", 1), ("bstp_larg_div_code", 4), ("bstp_medm_div_code", 4),
     ("bstp_smal_div_code", 4), ("mnin_cls_code_yn", 1), ("low_current_yn", 1), ("sprn_strr_nmix_issu_yn", 1),
@@ -101,7 +101,7 @@ def parse_master(data: bytes) -> list[MasterRecord]:
         if not line.strip():
             continue
         if len(line) != LINE_LEN:
-            raise SymbolSourceError(f"종목정보파일 {lineno}행 길이 {len(line)} ≠ {LINE_LEN} — 레이아웃 변경 의심")
+            raise SymbolSourceError(f"종목정보파일 {lineno}행 길이 {len(line)} ≠ {LINE_LEN} - 레이아웃 변경 의심")
         part1, part2 = line[:PART1_LEN], line[PART1_LEN:].decode("ascii", errors="replace")
         fields: dict[str, str] = {}
         pos = 0
@@ -179,10 +179,10 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
         data = fetch(str(src["url"]), str(src["member"]), float(src["timeout_sec"]))
         records = parse_master(data)          # 파싱까지 성공해야 캐시를 덮어쓴다
         _write_atomic(cache_path, data)
-    except Exception as exc:  # noqa: BLE001 — 다운로드·파싱 실패는 캐시로 대체
+    except Exception as exc:  # noqa: BLE001 - 다운로드·파싱 실패는 캐시로 대체
         warning = f"종목정보파일 다운로드 실패, 직전 캐시 사용: {exc.__class__.__name__}: {exc}"
         if not cache_path.exists():
-            raise SymbolSourceError(f"{warning} — 캐시({cache_path})도 없음") from exc
+            raise SymbolSourceError(f"{warning} - 캐시({cache_path})도 없음") from exc
         log.warning(warning)
         records = parse_master(cache_path.read_bytes())
         source = "cache"
@@ -202,7 +202,7 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
 
 
 def describe(result: SymbolLoadResult) -> str:
-    """장부(symbol_source 행)의 reason 에 남길 한 줄 — 어떤 필터로 몇 종목이 채택됐는지 증거."""
+    """장부(symbol_source 행)의 reason 에 남길 한 줄 - 어떤 필터로 몇 종목이 채택됐는지 증거."""
     c = result.counts
     return (f"{result.source}: selected {c.get('selected', 0)} = common {c.get('selected_common_stock', 0)}"
             f" + preferred {c.get('selected_preferred_stock', 0)} + etf {c.get('selected_etf', 0)}")

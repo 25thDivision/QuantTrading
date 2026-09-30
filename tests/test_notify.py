@@ -1,4 +1,4 @@
-"""디스코드 채널 분리 테스트 — purpose 라우팅·미설정 생략·경고 조건 3종 발송 (스텁 세션, 네트워크 없음)."""
+"""디스코드 채널 분리 테스트 - purpose 라우팅·미설정 생략·경고 조건 3종 발송 (스텁 세션, 네트워크 없음)."""
 from __future__ import annotations
 
 from datetime import datetime

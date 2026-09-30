@@ -1,4 +1,4 @@
-"""한국투자증권 시세 조회 최소 어댑터 — 접근토큰 발급·캐싱 + 주식당일분봉조회(FHKST03010200) + 주식일별분봉조회(FHKST03010230, 소급 보충 전용).
+"""한국투자증권 시세 조회 최소 어댑터 - 접근토큰 발급·캐싱 + 주식당일분봉조회(FHKST03010200) + 주식일별분봉조회(FHKST03010230, 소급 보충 전용).
 
 - 실전/모의 전환은 설정(broker.kis.<env>)의 도메인·키 환경변수 이름으로만 이루어진다.
 - 토큰은 파일 캐시(24시간 유효, 만료 여유분 전까지 재사용)로 재발급을 절제한다.
@@ -226,16 +226,16 @@ class KisQuoteClient:
                 return result
             if result.msg_cd in self.rate_limit_codes:
                 last_error = f"{result.msg_cd} {result.msg1}"
-                log.warning("%s 유량 초과 응답(%s) — %.1f초 후 재시도 (시도 %d)", label, result.msg_cd, self.retry_backoff * (attempt + 1), attempt + 1)
+                log.warning("%s 유량 초과 응답(%s) - %.1f초 후 재시도 (시도 %d)", label, result.msg_cd, self.retry_backoff * (attempt + 1), attempt + 1)
                 self._sleep(self.retry_backoff * (attempt + 1))
                 continue
             if result.msg_cd in self.transient_codes and transient_left > 0:
                 transient_left -= 1
-                log.warning("%s 서버 일시 오류(%s %s) — %.1f초 후 즉시 재시도 (남은 %d회)", label, result.msg_cd, result.msg1, self.transient_backoff, transient_left)
+                log.warning("%s 서버 일시 오류(%s %s) - %.1f초 후 즉시 재시도 (남은 %d회)", label, result.msg_cd, result.msg1, self.transient_backoff, transient_left)
                 self._sleep(self.transient_backoff)
                 continue
             if (result.msg_cd in self.expired_codes or resp.status_code == 401) and not reissued:
-                log.warning("토큰 만료 응답(%s %s) — 재발급 후 재시도", resp.status_code, result.msg_cd)
+                log.warning("토큰 만료 응답(%s %s) - 재발급 후 재시도", resp.status_code, result.msg_cd)
                 self.invalidate_token()
                 reissued = True
                 continue

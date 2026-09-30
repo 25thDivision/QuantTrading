@@ -1,4 +1,4 @@
-"""설정 로더 — config/config.yaml + .env (시크릿은 .env에서만).
+"""설정 로더 - config/config.yaml + .env (시크릿은 .env에서만).
 
 모든 수치 파라미터는 config/ 파일로 관리한다 (CLAUDE.md PART D, DECISIONS.md 원칙 4).
 .env 는 KEY=VALUE 형식이며 '#' 이후는 주석으로 버린다. 이미 존재하는 환경변수는 덮어쓰지 않는다.

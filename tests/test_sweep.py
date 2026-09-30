@@ -1,4 +1,4 @@
-"""스텁 어댑터 기반 수집기 테스트 — 네트워크 없이 실행. 페이징 조립·멱등성·collector_log·장중 부분 수집·유량 제한기."""
+"""스텁 어댑터 기반 수집기 테스트 - 네트워크 없이 실행. 페이징 조립·멱등성·collector_log·장중 부분 수집·유량 제한기."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -81,7 +81,7 @@ def test_paging_assembles_full_day(cfg, conn):
     out = result.outcomes[0]
     assert out.status == "ok" and out.reason is None
     assert len(out.candles) == 661
-    # 23 페이지(661/30 올림) — 마지막 페이지에서 전일 행이 섞여 종료. 거래일 판별 1회는 별도
+    # 23 페이지(661/30 올림) - 마지막 페이지에서 전일 행이 섞여 종료. 거래일 판별 1회는 별도
     assert out.pages == 23
     assert client.calls[0] == ("005930", "200000")
     stored = conn.execute("SELECT ts, session, volume, amount_cum FROM candles_1m ORDER BY ts").fetchall()

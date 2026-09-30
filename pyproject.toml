@@ -1,7 +1,7 @@
 [project]
 name = "QuantTrading"
 version = "0.1.0"
-description = "QuantTrading — 시스템 트레이딩 저장소 (docs/DECISIONS.md, docs/ARCHITECTURE.md 참조)"
+description = "QuantTrading - 시스템 트레이딩 저장소 (docs/DECISIONS.md, docs/ARCHITECTURE.md 참조)"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "pyyaml>=6.0.3",

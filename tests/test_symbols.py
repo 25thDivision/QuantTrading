@@ -1,4 +1,4 @@
-"""종목정보파일(kospi_code.mst) 파싱·필터·캐시 폴백 테스트 — 스텁 바이트로 네트워크 없이 실행."""
+"""종목정보파일(kospi_code.mst) 파싱·필터·캐시 폴백 테스트 - 스텁 바이트로 네트워크 없이 실행."""
 from __future__ import annotations
 
 import pytest
