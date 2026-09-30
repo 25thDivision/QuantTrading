@@ -86,6 +86,9 @@ broker:
     timeout_sec: 15
     max_retries: 3
     retry_backoff_sec: 2.0
+  lock:                         # env별 파일 잠금 (결정 11 "동시 실행 방지"). 잠금 파일 = <dir>/kis_<env>.lock
+    dir: data/locks             # 저장소 루트 기준 상대 경로 (data/ 는 git 제외). 없으면 생성
+    wait_log_sec: 60            # 잠금 대기 중 이 간격으로 "대기 중" 로그를 남기고 다시 시도. --no-wait 면 대기 없이 종료코드 3
 
 krx:                # KRX 공식 Open API (결정 12) - 일 단위 시장 데이터. 인증키는 .env 의 KRX_AUTH_KEY (조회 전용)
   base_url: https://data-dbg.krx.co.kr/svc/apis
