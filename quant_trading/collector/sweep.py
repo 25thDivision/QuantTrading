@@ -6,6 +6,7 @@
 - 시각 안전장치: 시작 시 probe 로 API 의 최근 거래일을 확인해 대상일과 다르면 순회 전에 중단. 순회 중 date_mismatch 가
   연속 N회(config)면 "수집 창 닫힘"으로 판정하고 즉시 중단 (수백 건 오류 양산 방지).
 - 장부 보호: ok/partial 행은 error·no_trade 로 덮어쓰지 않는다 (store.upsert_log). 재실행 기본 = 장부상 ok 가 아닌 종목만.
+  보호로 기록하지 못한 error 결과는 실패가 아니라 "보호됨"으로 따로 센다 (결과 집계에만 존재, 사유도 API 결과에서 집계).
 - 소급(backfill): 주식일별분봉조회로 지정일 결손 종목을 보충. 15:20~15:29 미제공이므로 성공도 partial 로 기록.
   응답 거래일이 대상일보다 과거면 그날 체결 0건(API 가 마지막 체결일을 반환) → no_trade + "무거래 - 최근 체결일". 미래면 error.
 - 종목 실패는 장부에 남기고 다음 종목으로 계속 진행한다 (전체 중단 금지 - 위 안전장치 발동은 예외).
@@ -23,7 +24,8 @@ from zoneinfo import ZoneInfo
 from quant_trading.broker.quote_source import QuoteResponse, QuoteSource
 from quant_trading.collector.dates import from_api_date, normalize_date, to_api_date
 from quant_trading.collector.models import (
-    KIND_INTRADAY_1M, STATUS_ERROR, STATUS_NO_TRADE, STATUS_OK, STATUS_PARTIAL, Candle, LogEntry, SymbolOutcome,
+    KIND_INTRADAY_1M, STATUS_ERROR, STATUS_NO_TRADE, STATUS_OK, STATUS_PARTIAL, STATUS_PROTECTED, Candle, LogEntry,
+    SymbolOutcome,
 )
 from quant_trading.collector.sessions import Session, load_sessions, session_for, sweep_window
 from quant_trading.collector.store import ok_symbols, upsert_candles, upsert_log
@@ -53,10 +55,22 @@ class SweepResult:
 
     @property
     def status_counts(self) -> dict[str, int]:
+        """상태별 종목 수. 장부 보호로 기록되지 않은 error 는 error 가 아니라 protected 로 센다."""
         counts: dict[str, int] = {}
         for o in self.outcomes:
-            counts[o.status] = counts.get(o.status, 0) + 1
+            status = STATUS_PROTECTED if o.protected else o.status
+            counts[status] = counts.get(status, 0) + 1
         return counts
+
+    @property
+    def protected_reasons(self) -> dict[str, int]:
+        """보호됨 종목의 사유 집계 - API 결과 reason 의 첫 토큰 (장부에는 기록되지 않는다)."""
+        reasons: dict[str, int] = {}
+        for o in self.outcomes:
+            if o.protected:
+                key = (o.reason or "unknown").split(" ")[0]
+                reasons[key] = reasons.get(key, 0) + 1
+        return reasons
 
     @property
     def rows(self) -> int:
@@ -253,6 +267,7 @@ def _record(conn: sqlite3.Connection, result: SweepResult, outcome: SymbolOutcom
     ))
     if not written:
         log.info("%s 장부 보호: 기존 ok/partial 행을 %s(%s) 로 덮어쓰지 않음", outcome.symbol, outcome.status, outcome.reason)
+        outcome.protected = outcome.status == STATUS_ERROR
     result.outcomes.append(outcome)
 
 
@@ -367,15 +382,23 @@ def backfill(
     return result
 
 
+def format_reasons(reasons: dict[str, int]) -> str:
+    """사유 집계를 건수 내림차순 상위 3개까지 "사유×n, ..." 로."""
+    return ", ".join(f"{k}×{v}" for k, v in sorted(reasons.items(), key=lambda kv: -kv[1])[:3])
+
+
 def format_summary(result: SweepResult, error_reasons: dict[str, int], *, note: str | None = None) -> str:
+    """실패 사유(error_reasons)는 장부 run_id 기준, 보호됨 사유는 결과 집계 기준."""
     c = result.status_counts
-    reasons = ", ".join(f"{k}×{v}" for k, v in sorted(error_reasons.items(), key=lambda kv: -kv[1])[:3])
+    reasons = format_reasons(error_reasons)
+    protected = format_reasons(result.protected_reasons)
     mm, ss = divmod(int(result.elapsed_sec), 60)
     label = "소급" if result.mode == "backfill" else "스윕"
     return (
         f"[collector {result.env}] {result.trade_date} {label} 종료: 성공 {c.get(STATUS_OK, 0)} / 부분 {c.get(STATUS_PARTIAL, 0)}"
         f" / 무거래 {c.get(STATUS_NO_TRADE, 0)} / 실패 {c.get(STATUS_ERROR, 0)}"
-        f"{'(' + reasons + ')' if reasons else ''} / 건너뜀 {result.skipped}(기존 ok) / 행 {result.rows}"
+        f"{'(' + reasons + ')' if reasons else ''} / 보호됨 {c.get(STATUS_PROTECTED, 0)}"
+        f"{'(' + protected + ')' if protected else ''} / 건너뜀 {result.skipped}(기존 ok) / 행 {result.rows}"
         f" / 종목 {len(result.outcomes)} / 소요 {mm}분 {ss}초"
         f"{' / 경고: ' + note if note else ''}"
     )

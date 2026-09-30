@@ -1,7 +1,8 @@
 """스윕 실행 오케스트레이션 - 설정 → 어댑터 → 종목 목록 → 스윕 → 장부 집계 → 디스코드.
 
 알림 역할 분담: 일상 요약은 collector 채널(성공·실패 무관 매일), 경고는 alerts 채널에 별도 한 줄
-(분봉 실패 종목 ≥ 1 / 종목 목록 캐시 폴백 / 스윕 중단). 요약과 경고는 중복이 아니라 일지와 사이렌이다.
+(장부상 error ≥ 1 또는 보호됨 비율·건수 기준 동시 충족 / 종목 목록 캐시 폴백 / 스윕 중단).
+요약과 경고는 중복이 아니라 일지와 사이렌이다.
 """
 from __future__ import annotations
 
@@ -11,10 +12,10 @@ from typing import Any
 
 from quant_trading.broker.kis_quote import KisQuoteClient
 from quant_trading.broker.ratelimit import RateLimiter
-from quant_trading.collector.models import STATUS_ERROR, LogEntry
+from quant_trading.collector.models import STATUS_ERROR, STATUS_PROTECTED, LogEntry
 from quant_trading.collector.schema import connect
 from quant_trading.collector.store import run_summary, upsert_log
-from quant_trading.collector.sweep import SweepResult, backfill, format_summary, sweep
+from quant_trading.collector.sweep import SweepResult, backfill, format_reasons, format_summary, sweep
 from quant_trading.collector.symbols import SymbolLoadResult, describe, load_symbols
 from quant_trading.config import require
 from quant_trading.notify import discord
@@ -22,13 +23,42 @@ from quant_trading.notify import discord
 log = logging.getLogger(__name__)
 
 
-def alert_messages(result: SweepResult, loaded: SymbolLoadResult | None, error_reasons: dict[str, int]) -> list[str]:
-    """alerts 채널로 보낼 경고 문장들. 조건: 분봉 실패 종목 ≥ 1, 종목 목록 캐시 폴백."""
+def protected_siren(protected: int, processed: int, *, ratio: float, count: int) -> bool:
+    """보호됨 사이렌 조건: 보호됨 / 처리 종목 수 >= ratio 그리고 보호됨 >= count (둘 다 충족, 결정 11)."""
+    return processed > 0 and protected / processed >= ratio and protected >= count
+
+
+def alert_messages(
+    result: SweepResult,
+    loaded: SymbolLoadResult | None,
+    error_reasons: dict[str, int],
+    *,
+    ledger_errors: int | None = None,
+    protected_ratio: float | None = None,
+    protected_count: int | None = None,
+) -> list[str]:
+    """alerts 채널로 보낼 경고 문장들.
+
+    분봉 경고 조건: 장부상 error(run_id 기준) >= 1 또는 보호됨 비율·건수 기준 동시 충족. 처리 종목 수는 이번
+    실행에서 실제 처리한 종목(건너뜀 제외). ledger_errors 를 주지 않으면 결과 집계의 error 수를 쓴다 (error 결과는
+    장부에 기록되거나 보호됨으로 빠지므로 같은 값). 기준값(config alerts)을 주지 않으면 보호됨 조건은 보지 않는다.
+    그 밖의 조건: 종목 목록 캐시 폴백.
+    """
     alerts: list[str] = []
-    errors = result.status_counts.get(STATUS_ERROR, 0)
-    if errors >= 1:
-        reasons = ", ".join(f"{k}×{v}" for k, v in sorted(error_reasons.items(), key=lambda kv: -kv[1])[:3])
-        alerts.append(f"[collector {result.env}] 경고: {result.trade_date} 분봉 실패 {errors}종목 / {len(result.outcomes)}종목 ({reasons})")
+    errors = result.status_counts.get(STATUS_ERROR, 0) if ledger_errors is None else ledger_errors
+    processed = len(result.outcomes)
+    protected = result.status_counts.get(STATUS_PROTECTED, 0)
+    by_protected = (protected_ratio is not None and protected_count is not None
+                    and protected_siren(protected, processed, ratio=protected_ratio, count=protected_count))
+    if errors >= 1 or by_protected:
+        reasons = format_reasons(error_reasons)
+        share = protected / processed if processed else 0.0
+        protected_reasons = format_reasons(result.protected_reasons)
+        alerts.append(
+            f"[collector {result.env}] 경고: {result.trade_date} 분봉 실패 {errors}종목 / {processed}종목"
+            f"{' (' + reasons + ')' if reasons else ''}"
+            f" / 보호됨 {protected}종목 (비율 {share:.1%}{', ' + protected_reasons if protected_reasons else ''})"
+        )
     if loaded is not None and loaded.warning:
         alerts.append(f"[collector {result.env}] 경고: {loaded.warning}")
     return alerts
@@ -67,6 +97,9 @@ def run_sweep(
 
 
 def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_only, mode) -> SweepResult:
+    # 사이렌 기준값은 순회 전에 읽는다 (설정 누락을 몇 시간짜리 스윕이 끝난 뒤가 아니라 시작 시점에 드러낸다)
+    protected_ratio = float(require(cfg, "alerts", "protected_ratio"))
+    protected_count = int(require(cfg, "alerts", "protected_count"))
     limiter = RateLimiter(float(require(ccfg, "rate_per_sec", env)))
     client = KisQuoteClient(cfg, env, limiter)
     conn = connect(str(ccfg["db_path"]))
@@ -99,7 +132,9 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_on
     log.info(message)
     if notify:
         _notify(cfg, discord.PURPOSE_COLLECTOR, message)
-        for alert in alert_messages(result, loaded, summary["error_reasons"]):
+        for alert in alert_messages(result, loaded, summary["error_reasons"],
+                                    ledger_errors=summary["status_counts"].get(STATUS_ERROR, 0),
+                                    protected_ratio=protected_ratio, protected_count=protected_count):
             log.warning(alert)
             _notify(cfg, discord.PURPOSE_ALERTS, alert)
     return result

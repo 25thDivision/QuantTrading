@@ -103,6 +103,10 @@ krx:                # KRX 공식 Open API (결정 12) - 일 단위 시장 데이
   daily_budget: 7000            # 인증키당 일일 한도 10,000회 대비 여유. 지금은 값만 둔다 (집계·차단은 지시 문안 2 이후)
   history_start: "2010-01-04"   # 최초 제공일 (ISO 문자열)
 
+alerts:             # alerts 채널 사이렌 기준 (결정 11 "보호됨 집계와 사이렌 조건"). 장부상 error 1건 이상이면 기준과 무관하게 발송
+  protected_ratio: 0.30         # 보호됨 / 처리 종목 수(건너뜀 제외) 가 이 값 이상이고 (초기값은 어림)
+  protected_count: 20           # 보호됨 건수도 이 값 이상이면 발송 (둘 다 충족)
+
 notify:
   discord:                    # 채널 4분할 - 용도(purpose)별 웹훅 환경변수 이름. 값은 .env (미설정 변수는 경고 로그 후 생략)
     webhooks:
