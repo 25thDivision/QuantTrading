@@ -1,0 +1,32 @@
+{
+  "OutBlock_1": [
+    {
+      "ISU_CD": "KR7005930003",
+      "ISU_SRT_CD": "005930",
+      "ISU_NM": "삼성전자보통주",
+      "ISU_ABBRV": "삼성전자",
+      "ISU_ENG_NM": "FixtureSamsung",
+      "LIST_DD": "20000104",
+      "MKT_TP_NM": "KOSPI",
+      "SECUGRP_NM": "주권",
+      "SECT_TP_NM": "",
+      "KIND_STKCERT_TP_NM": "보통주",
+      "PARVAL": "100",
+      "LIST_SHRS": "5000000000"
+    },
+    {
+      "ISU_CD": "KR7999991009",
+      "ISU_SRT_CD": "999990",
+      "ISU_NM": "픽스처무체결보통주",
+      "ISU_ABBRV": "픽스처무체결",
+      "ISU_ENG_NM": "FixtureNoTrade",
+      "LIST_DD": "20000104",
+      "MKT_TP_NM": "KOSPI",
+      "SECUGRP_NM": "주권",
+      "SECT_TP_NM": "",
+      "KIND_STKCERT_TP_NM": "보통주",
+      "PARVAL": "무액면",
+      "LIST_SHRS": "10000000"
+    }
+  ]
+}

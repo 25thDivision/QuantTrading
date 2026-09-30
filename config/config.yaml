@@ -87,6 +87,22 @@ broker:
     max_retries: 3
     retry_backoff_sec: 2.0
 
+krx:                # KRX 공식 Open API (결정 12) - 일 단위 시장 데이터. 인증키는 .env 의 KRX_AUTH_KEY (조회 전용)
+  base_url: https://data-dbg.krx.co.kr/svc/apis
+  services:                     # 서비스 키: API 경로. 호출 = GET {base_url}/{경로}.json?basDd=YYYYMMDD, 헤더 AUTH_KEY
+    stock_kospi:  sto/stk_bydd_trd        # 유가증권 일별매매정보
+    stock_kosdaq: sto/ksq_bydd_trd        # 코스닥 일별매매정보 (연구용 축적. 코스닥 거래 금지는 유지)
+    etf:          etp/etf_bydd_trd        # ETF 일별매매정보
+    index_kospi:  idx/kospi_dd_trd        # KOSPI 시리즈 일별시세정보
+    issue_kospi:  sto/stk_isu_base_info   # 유가증권 종목기본정보
+    issue_kosdaq: sto/ksq_isu_base_info   # 코스닥 종목기본정보
+  rate_per_sec: 1               # 초당 1회 페이스 (과도 접속은 IP 차단 사유, 기준 수치 없음)
+  timeout_sec: 30
+  retries: 2                    # 네트워크 오류·5xx에 한해 retry_backoff_sec 간격 즉시 재시도
+  retry_backoff_sec: 2.0
+  daily_budget: 7000            # 인증키당 일일 한도 10,000회 대비 여유. 지금은 값만 둔다 (집계·차단은 지시 문안 2 이후)
+  history_start: "2010-01-04"   # 최초 제공일 (ISO 문자열)
+
 notify:
   discord:                    # 채널 4분할 - 용도(purpose)별 웹훅 환경변수 이름. 값은 .env (미설정 변수는 경고 로그 후 생략)
     webhooks:

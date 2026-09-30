@@ -1,0 +1,46 @@
+{
+  "OutBlock_1": [
+    {
+      "BAS_DD": "20260918",
+      "ISU_CD": "999960",
+      "ISU_NM": "픽스처ETF A",
+      "TDD_CLSPRC": "10000",
+      "CMPPREVDD_PRC": "0",
+      "FLUC_RT": "0.00",
+      "NAV": "10005.12",
+      "TDD_OPNPRC": "9990",
+      "TDD_HGPRC": "10010",
+      "TDD_LWPRC": "9980",
+      "ACC_TRDVOL": "30000",
+      "ACC_TRDVAL": "300000000",
+      "MKTCAP": "100000000000",
+      "INVSTASST_NETASST_TOTAMT": "100051200000",
+      "LIST_SHRS": "10000000",
+      "IDX_IND_NM": "픽스처지수 A",
+      "OBJ_STKPRC_IDX": "1000.00",
+      "CMPPREVDD_IDX": "0.00",
+      "FLUC_RT_IDX": "0.00"
+    },
+    {
+      "BAS_DD": "20260918",
+      "ISU_CD": "999950",
+      "ISU_NM": "픽스처ETF B",
+      "TDD_CLSPRC": "20000",
+      "CMPPREVDD_PRC": "0",
+      "FLUC_RT": "0.00",
+      "NAV": "20010.50",
+      "TDD_OPNPRC": "0",
+      "TDD_HGPRC": "0",
+      "TDD_LWPRC": "0",
+      "ACC_TRDVOL": "0",
+      "ACC_TRDVAL": "0",
+      "MKTCAP": "40000000000",
+      "INVSTASST_NETASST_TOTAMT": "40021000000",
+      "LIST_SHRS": "2000000",
+      "IDX_IND_NM": "픽스처지수 B",
+      "OBJ_STKPRC_IDX": "1000.00",
+      "CMPPREVDD_IDX": "0.00",
+      "FLUC_RT_IDX": "0.00"
+    }
+  ]
+}

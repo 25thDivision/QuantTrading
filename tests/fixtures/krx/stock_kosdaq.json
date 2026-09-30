@@ -1,0 +1,38 @@
+{
+  "OutBlock_1": [
+    {
+      "BAS_DD": "20260918",
+      "ISU_CD": "999980",
+      "ISU_NM": "픽스처코스닥A",
+      "MKT_NM": "KOSDAQ",
+      "SECT_TP_NM": "중견기업부",
+      "TDD_CLSPRC": "5000",
+      "CMPPREVDD_PRC": "0",
+      "FLUC_RT": "0.00",
+      "TDD_OPNPRC": "4900",
+      "TDD_HGPRC": "5100",
+      "TDD_LWPRC": "4800",
+      "ACC_TRDVOL": "20000",
+      "ACC_TRDVAL": "100000000",
+      "MKTCAP": "50000000000",
+      "LIST_SHRS": "10000000"
+    },
+    {
+      "BAS_DD": "20260918",
+      "ISU_CD": "999970",
+      "ISU_NM": "픽스처코스닥B",
+      "MKT_NM": "KOSDAQ",
+      "SECT_TP_NM": "벤처기업부",
+      "TDD_CLSPRC": "2000",
+      "CMPPREVDD_PRC": "0",
+      "FLUC_RT": "0.00",
+      "TDD_OPNPRC": "0",
+      "TDD_HGPRC": "0",
+      "TDD_LWPRC": "0",
+      "ACC_TRDVOL": "0",
+      "ACC_TRDVAL": "0",
+      "MKTCAP": "20000000000",
+      "LIST_SHRS": "10000000"
+    }
+  ]
+}

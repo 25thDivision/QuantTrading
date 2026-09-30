@@ -1,0 +1,38 @@
+{
+  "OutBlock_1": [
+    {
+      "BAS_DD": "20260918",
+      "ISU_CD": "005930",
+      "ISU_NM": "삼성전자",
+      "MKT_NM": "KOSPI",
+      "SECT_TP_NM": "",
+      "TDD_CLSPRC": "261000",
+      "CMPPREVDD_PRC": "0",
+      "FLUC_RT": "0.00",
+      "TDD_OPNPRC": "261000",
+      "TDD_HGPRC": "262000",
+      "TDD_LWPRC": "257500",
+      "ACC_TRDVOL": "1000000",
+      "ACC_TRDVAL": "260000000000",
+      "MKTCAP": "1500000000000000",
+      "LIST_SHRS": "5000000000"
+    },
+    {
+      "BAS_DD": "20260918",
+      "ISU_CD": "999990",
+      "ISU_NM": "픽스처무체결",
+      "MKT_NM": "KOSPI",
+      "SECT_TP_NM": "",
+      "TDD_CLSPRC": "1000",
+      "CMPPREVDD_PRC": "0",
+      "FLUC_RT": "0.00",
+      "TDD_OPNPRC": "0",
+      "TDD_HGPRC": "0",
+      "TDD_LWPRC": "0",
+      "ACC_TRDVOL": "0",
+      "ACC_TRDVAL": "0",
+      "MKTCAP": "10000000000",
+      "LIST_SHRS": "10000000"
+    }
+  ]
+}
