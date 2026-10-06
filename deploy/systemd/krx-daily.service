@@ -1,0 +1,27 @@
+# QuantTrading KRX 일 단위 적재 (결정 12) - k12 전용 oneshot 서비스. krx-daily.timer 가 매일 08:15 기동한다.
+# 상태 주도 적재(scripts/sweep_krx.py --load): 전일분 정규 적재와 2010년부터의 과거 적재를 같은 명령이 일일 예산(config krx.daily_budget,
+# 7,000회) 안에서 이어간다. 처음 2~3일은 하루 예산을 다 쓰므로 초당 1회 페이스로 약 2시간이 걸린다 (TimeoutStartSec 3h 는 그 여유).
+# 인증은 .env 의 KRX_AUTH_KEY (조회 전용). 한국투자증권 키·잠금과 무관하며 중복 실행은 data/locks/krx.lock 으로 막는다.
+# 배포: scripts/deploy_units.sh 실행 = deploy/systemd/*.service|*.timer|*.slice 를 /etc/systemd/system/ 에 복사 → daemon-reload.
+#       restart 는 하지 않으므로(타이머 구동) 새 정의는 다음 예약 실행부터 적용. 심볼릭 링크 금지 - 결정 8
+[Unit]
+Description=QuantTrading KRX daily load (decision 12, state-driven with daily budget)
+After=network-online.target
+Wants=network-online.target
+# on-failure 재시작이 무한 반복되지 않도록 1시간에 3회로 제한 (이후는 다음 날 타이머가 재기동)
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=seokhyeon
+WorkingDirectory=/home/seokhyeon/QuantTrading
+# .env 는 코드가 직접 읽는다 (EnvironmentFile 은 인라인 주석을 지원하지 않으므로 사용하지 않음)
+# uv 는 절대 경로 (%h 치환자는 시스템 유닛에서 root 홈으로 풀릴 수 있어 사용하지 않음)
+ExecStart=/home/seokhyeon/.local/bin/uv run --project /home/seokhyeon/QuantTrading python scripts/sweep_krx.py --load
+Restart=on-failure
+RestartSec=5min
+TimeoutStartSec=3h
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qt-krx-daily

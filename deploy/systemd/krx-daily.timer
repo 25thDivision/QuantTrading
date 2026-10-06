@@ -1,0 +1,13 @@
+# QuantTrading KRX 적재 타이머 - KRX 전일분 갱신(익영업일 08:00) 이후 매일 08:15 실행.
+# OnCalendar 시각은 config/config.yaml 의 krx.daily_run_at("08:15") 와 반드시 일치시킬 것 (수동 동기).
+# 휴장일·주말에도 기동한다: 전일이 휴장일이면 빈 응답으로 pending/휴장일 확정만 하고, 남은 예산은 과거 적재에 쓴다 (결정 12).
+[Unit]
+Description=Daily trigger for QuantTrading KRX load (after KRX 08:00 update)
+
+[Timer]
+OnCalendar=*-*-* 08:15:00 Asia/Seoul
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
