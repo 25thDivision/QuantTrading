@@ -1,0 +1,13 @@
+# QuantTrading 종목정보파일 장 전 스냅샷 타이머 - 파일 08:45 판 갱신 뒤 매일 08:50 실행.
+# OnCalendar 시각은 config/config.yaml 의 collector.symbol_status.pre_open_time("08:50") 와 반드시 일치시킬 것 (수동 동기).
+# 휴장일·주말에도 기동한다 (파일은 매일 갱신되며 스냅샷은 UPSERT 라 무해).
+[Unit]
+Description=Daily trigger for QuantTrading symbol status snapshot (08:50, before open)
+
+[Timer]
+OnCalendar=*-*-* 08:50:00 Asia/Seoul
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

@@ -1,4 +1,5 @@
-"""SQLite 스키마 - 분봉 수집 두 테이블(candles_1m, collector_log). KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
+"""SQLite 스키마 - 분봉 수집 두 테이블(candles_1m, collector_log)과 종목정보파일 플래그 스냅샷(symbol_status_daily).
+KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
 
 설계 근거 (DECISIONS.md 결정 11, ARCHITECTURE.md 2절):
 - candles_1m: 원본가 불변 저장. (symbol, ts) 복합 PK 로 재실행 멱등(UPSERT). ts 는 API 분봉 라벨을
@@ -50,6 +51,30 @@ CREATE TABLE IF NOT EXISTS collector_log (
     PRIMARY KEY (trade_date, symbol, kind)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS ix_collector_log_run ON collector_log (run_id);
+
+CREATE TABLE IF NOT EXISTS symbol_status_daily (
+    snapshot_date         TEXT    NOT NULL,   -- 'YYYY-MM-DD' (다운로드한 날, 한국 날짜)
+    snapshot_kind         TEXT    NOT NULL,   -- pre_open (08:50 장 전 판) | post_close (20:30 스윕의 다운로드)
+    symbol                TEXT    NOT NULL,   -- 단축코드 (영문자 포함 가능)
+    "group"               TEXT    NOT NULL,   -- 증권그룹구분코드 (ST/EF/EN/BC/RT/...) - 파일 전 그룹 기록
+    name                  TEXT,
+    halted                INTEGER NOT NULL,   -- trht_yn 거래정지 (0/1)
+    liquidation           INTEGER NOT NULL,   -- sltr_yn 정리매매
+    managed               INTEGER NOT NULL,   -- mang_issu_yn 관리종목
+    alarm_code            TEXT    NOT NULL,   -- mrkt_alrm_cls_code 00 해당없음 / 01 투자주의 / 02 투자경고 / 03 투자위험
+    alarm_risk_notice     INTEGER NOT NULL,   -- mrkt_alrm_risk_adnt_yn 경고위험예고
+    short_over_code       TEXT    NOT NULL,   -- short_over_cls_code 단기과열 0 / 1 지정예고 / 2 지정 / 3 지정연장
+    short_sale_hot        INTEGER NOT NULL,   -- ssts_hot_yn 공매도과열
+    abnormal_rise         INTEGER NOT NULL,   -- stange_runup_yn 이상급등
+    unfaithful_disclosure INTEGER NOT NULL,   -- insn_pbnt_yn 불성실공시
+    low_liquidity         INTEGER NOT NULL,   -- low_current_yn 저유동성
+    pref_kind             TEXT    NOT NULL,   -- prst_cls_code 0 보통주 / 1 구형우선주 / 2 신형우선주 / 9 종류주권(헤더 미기재)
+    listed_shares         INTEGER,            -- lstn_stcn (천 단위 여부는 헤더 주석 "(천)" - 원문 숫자 그대로)
+    raw_fields            TEXT    NOT NULL,   -- 파일 뒷부분 고정폭 필드 70개 원문 JSON (추후 컬럼 승격 대비)
+    file_mtime            TEXT,               -- 다운로드 응답의 Last-Modified (ISO, Asia/Seoul). 캐시 사용 시 캐시 파일 mtime
+    fetched_at            TEXT    NOT NULL,
+    PRIMARY KEY (snapshot_date, snapshot_kind, symbol)
+) WITHOUT ROWID;
 """
 
 

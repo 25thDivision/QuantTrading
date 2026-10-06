@@ -1,0 +1,22 @@
+# QuantTrading 종목정보파일 지정내역 스냅샷 - 장 전 판 (결정 12 symbol_status_daily). symbol-status-preopen.timer 가 매일 08:50 기동한다.
+# 무자격증명 공개 파일을 내려받아 전 그룹 종목의 거래정지·관리·시장경고 등 플래그를 저장한다 (키 불필요, 호출 1회).
+# 장 후 판(post_close)은 collector.service 의 스윕이 자기 다운로드로 적재하므로 별도 유닛이 없다.
+# 배포: scripts/deploy_units.sh (복사 → daemon-reload, restart 없음). 심볼릭 링크 금지 - 결정 8
+[Unit]
+Description=QuantTrading symbol status snapshot before market open (decision 12)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=seokhyeon
+WorkingDirectory=/home/seokhyeon/QuantTrading
+ExecStart=/home/seokhyeon/.local/bin/uv run --project /home/seokhyeon/QuantTrading python scripts/snapshot_symbols.py --kind pre_open
+Restart=on-failure
+RestartSec=2min
+TimeoutStartSec=10min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qt-symbol-status

@@ -65,6 +65,9 @@ collector:          # 분봉 스윕 수집기 (결정 11) - 마감 후 REST 일�
     groups: [ST, EF]            # 증권그룹구분코드: ST 주권, EF ETF. ETN(EN)·수익증권(BC)·리츠(RT) 등 제외
     common_only: false          # false: 주권(ST) 전체(보통주 + 우선주) 수집. true 면 우선주구분코드 0(보통주)만
   notify: {discord: true}       # 스윕 종료 시 collector_log 집계 한 줄 전송 (웹훅 미설정 시 경고 로그만)
+  symbol_status:                # 종목정보파일 지정내역 플래그 스냅샷 2회 (결정 12 symbol_status_daily, 파일 전 그룹)
+    pre_open_time: "08:50"      # k12 타이머 시각 (08:45 판). deploy/systemd/symbol-status-preopen.timer 의 OnCalendar 와 일치시킬 것
+    post_close: with_sweep      # 장 후 판은 20:30 스윕이 내려받은 파일로 적재 (별도 다운로드 없음)
 
 broker:
   kis:

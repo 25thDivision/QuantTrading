@@ -9,12 +9,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from quant_trading.broker.kis_quote import KisQuoteClient
 from quant_trading.broker.ratelimit import RateLimiter
 from quant_trading.collector.models import STATUS_ERROR, STATUS_PROTECTED, LogEntry
 from quant_trading.collector.schema import connect
 from quant_trading.collector.store import run_summary, upsert_log
+from quant_trading.collector.symbol_status import KIND_POST_CLOSE, snapshot_from_loaded
 from quant_trading.collector.sweep import SweepResult, backfill, format_reasons, format_summary, sweep
 from quant_trading.collector.symbols import SymbolLoadResult, describe, load_symbols
 from quant_trading.config import require
@@ -105,9 +107,18 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_on
     conn = connect(str(ccfg["db_path"]))
     try:
         loaded: SymbolLoadResult | None = None
+        snapshot_alert: str | None = None
         if symbols is None:
             loaded = load_symbols(cfg)
             symbols = loaded.symbols
+            if mode != "backfill":
+                # 당일 스윕은 내려받은 파일로 post_close 지정내역 스냅샷을 바로 적재한다 (별도 다운로드 없음, 결정 12)
+                snap_now = datetime.now(ZoneInfo(str(require(cfg, "markets", "kospi", "timezone"))))
+                try:
+                    snapshot_from_loaded(conn, loaded, KIND_POST_CLOSE, snapshot_date=snap_now.date().isoformat(), now=snap_now)
+                except Exception as exc:  # noqa: BLE001 - 스냅샷 실패가 분봉 수집을 막지 않는다
+                    snapshot_alert = f"[collector {env}] 경고: post_close 지정내역 스냅샷 실패 {exc.__class__.__name__}: {exc}"
+                    log.exception("post_close 스냅샷 실패")
         if limit:
             symbols = symbols[:limit]
         if mode == "backfill":
@@ -134,9 +145,10 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_on
     log.info(message)
     if notify:
         _notify(cfg, discord.PURPOSE_COLLECTOR, message)
-        for alert in alert_messages(result, loaded, summary["error_reasons"],
-                                    ledger_errors=summary["status_counts"].get(STATUS_ERROR, 0),
-                                    protected_ratio=protected_ratio, protected_count=protected_count):
+        alerts = alert_messages(result, loaded, summary["error_reasons"],
+                                ledger_errors=summary["status_counts"].get(STATUS_ERROR, 0),
+                                protected_ratio=protected_ratio, protected_count=protected_count)
+        for alert in alerts + ([snapshot_alert] if snapshot_alert else []):
             log.warning(alert)
             _notify(cfg, discord.PURPOSE_ALERTS, alert)
     return result

@@ -16,10 +16,13 @@ import io
 import logging
 import os
 import zipfile
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -91,6 +94,8 @@ class SymbolLoadResult:
     warning: str | None              # 다운로드 실패 시 사유 (캐시 사용)
     counts: dict[str, int]           # 그룹별 파싱 건수 + common_stock/etf/selected
     cache_path: Path
+    records: list[MasterRecord] = field(default_factory=list)   # 파일 전 행 (전 그룹) - 지정내역 스냅샷용
+    file_mtime: str | None = None    # 다운로드 응답 Last-Modified(ISO) 또는 캐시 파일 mtime(ISO)
 
 
 # ------------------------------------------------------------------ parse
@@ -147,14 +152,28 @@ def summarize(records: list[MasterRecord], selected: list[str]) -> dict[str, int
 
 
 # --------------------------------------------------------------- download
-def download_master(url: str, member: str, timeout: float) -> bytes:
+def download_master_with_meta(url: str, member: str, timeout: float) -> tuple[bytes, str | None]:
+    """(파일 바이트, 응답 Last-Modified 를 ISO(Asia/Seoul)로 - 없으면 None)."""
     resp = requests.get(url, timeout=timeout)
     resp.raise_for_status()
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         names = zf.namelist()
         if member not in names:
             raise SymbolSourceError(f"zip 안에 {member} 가 없습니다: {names}")
-        return zf.read(member)
+        return zf.read(member), http_date_to_iso(resp.headers.get("Last-Modified"))
+
+
+def download_master(url: str, member: str, timeout: float) -> bytes:
+    return download_master_with_meta(url, member, timeout)[0]
+
+
+def http_date_to_iso(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return parsedate_to_datetime(value).astimezone(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    except (TypeError, ValueError):
+        return None
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -172,11 +191,13 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
     cache_path = resolve_path(str(src["cache_path"]))
     groups = [str(g) for g in src["groups"]]
     common_only = bool(src["common_only"])
-    fetch = downloader or download_master
+    fetch = downloader or download_master_with_meta
     warning: str | None = None
     source = "download"
+    file_mtime: str | None = None
     try:
-        data = fetch(str(src["url"]), str(src["member"]), float(src["timeout_sec"]))
+        fetched = fetch(str(src["url"]), str(src["member"]), float(src["timeout_sec"]))
+        data, file_mtime = fetched if isinstance(fetched, tuple) else (fetched, None)   # downloader 가 (bytes, mtime) 을 줄 수도 있다
         records = parse_master(data)          # 파싱까지 성공해야 캐시를 덮어쓴다
         _write_atomic(cache_path, data)
     except Exception as exc:  # noqa: BLE001 - 다운로드·파싱 실패는 캐시로 대체
@@ -186,6 +207,7 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
         log.warning(warning)
         records = parse_master(cache_path.read_bytes())
         source = "cache"
+        file_mtime = datetime.fromtimestamp(cache_path.stat().st_mtime, ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
     symbols = select_symbols(records, groups, common_only)
     counts = summarize(records, symbols)
     if not symbols:
@@ -198,7 +220,8 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
         source, len(symbols), counts["selected_common_stock"], counts["selected_preferred_stock"], counts["selected_etf"],
         groups, common_only, len(records), counts.get("ST", 0), counts.get("EF", 0), counts.get("EN", 0),
     )
-    return SymbolLoadResult(symbols=symbols, source=source, warning=warning, counts=counts, cache_path=cache_path)
+    return SymbolLoadResult(symbols=symbols, source=source, warning=warning, counts=counts, cache_path=cache_path,
+                            records=records, file_mtime=file_mtime)
 
 
 def describe(result: SymbolLoadResult) -> str:
