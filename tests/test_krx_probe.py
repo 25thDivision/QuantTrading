@@ -93,7 +93,7 @@ def test_service_kind_from_key():
 
 def test_probe_prints_items_for_every_service(cfg):
     outcomes, lines, session = probe(cfg, SERVICES, [FakeResponse(200, fixture_text(s)) for s in SERVICES])
-    assert [(o.service, o.state, o.rows) for o in outcomes] == [(s, "정상", 2) for s in SERVICES]
+    assert [(o.service, o.state) for o in outcomes] == [(s, "정상") for s in SERVICES]
     assert len(session.calls) == 6                                                # 서비스당 1호출
     for service in SERVICES:
         text = block(lines, service)
@@ -135,14 +135,15 @@ def test_probe_etf_index_issue_details(cfg):
     assert "5. 이름 일치 행 (삼성전자, 대조 필드 IDX_NM): 없음" in index
     assert "6. 코드 필드 길이 분포: 없음" in index
     assert sum("쉼표 포함" in line for line in index) == 7
-    k = index.index("10. 지수 목록 (IDX_CLSS, IDX_NM, CLSPRC_IDX): 2건")
-    assert index[k + 1:k + 3] == ["   (KOSPI, 코스피, 3000.00)", "   (KOSPI, 코스피 200, 400.00)"]
+    k = index.index("10. 지수 목록 (IDX_CLSS, IDX_NM, CLSPRC_IDX): 3건")
+    assert index[k + 1:k + 4] == ["   (KOSPI, 코스피, 3000.00)", "   (KOSPI, 코스피 200, 400.00)", "   (KOSPI, 코스피 (외국주포함), )"]
+    assert "   OPNPRC_IDX 쉼표 포함 0 / '-' 값 0 / '0' 값 0 / 빈 문자열 1" in index       # 외국주포함 행은 시가·고가·저가·종가 결측
     issue = block(lines, "issue_kospi")
     assert "5. 이름 일치 행 (삼성전자, 대조 필드 ISU_ABBRV·ISU_NM): 1건" in issue    # ISU_ABBRV 로 일치
     assert "   ISU_CD {12: 2}" in issue and "   ISU_SRT_CD {6: 2}" in issue
-    assert "   PARVAL 쉼표 포함 0 / '-' 값 0 / '0' 값 0 / 빈 문자열 0" in issue
+    assert "   PARVAL 쉼표 포함 0 / '-' 값 0 / '0' 값 1 / 빈 문자열 0" in issue            # 무액면 주식의 액면가 "0"
     assert "8. 무체결일 표현 (시가·고가·저가가 모두 '0' 또는 '-'인 행): 없음" in issue
-    assert "   SECUGRP_NM {'주권': 2}" in issue and "   KIND_STKCERT_TP_NM {'보통주': 2}" in issue
+    assert "   SECUGRP_NM {'주권': 2}" in issue and "   KIND_STKCERT_TP_NM {'보통주': 1, '종류주권': 1}" in issue
     assert "   MKT_TP_NM {'KOSPI': 2}" in issue
 
 

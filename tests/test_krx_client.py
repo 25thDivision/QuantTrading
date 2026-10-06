@@ -82,7 +82,7 @@ def test_fetch_returns_rows_as_is(cfg, service):
     client, session, limiter, _ = make_client(cfg, [FakeResponse(200, fixture_text(service))])
     rows = client.fetch(service, "2026-09-18")
     expected = json.loads(fixture_text(service))["OutBlock_1"]
-    assert rows == expected and len(rows) == 2
+    assert rows == expected and len(rows) in (2, 3)
     assert [list(r) for r in rows] == [list(r) for r in expected]                 # 필드 순서 그대로
     assert all(isinstance(v, str) for r in rows for v in r.values())              # 숫자 변환 없음
     call = session.calls[0]
@@ -219,3 +219,46 @@ def test_auth_key_never_in_logs_or_messages(cfg, caplog):
             messages.append(str(excinfo.value))
     assert len(messages) == 3 and all(TEST_KEY not in m for m in messages)
     assert TEST_KEY not in caplog.text and "행=2" in caplog.text
+
+
+# ------------------------------------------------- 픽스처 = 명세서 (docs/specs/krx)
+def spec_fields(api_id: str) -> list[str]:
+    """docs/specs/krx/<api_id>.md 의 'response - OutBlock_1' 표에서 필드명을 순서대로 읽는다."""
+    text = (Path(__file__).resolve().parent.parent / "docs" / "specs" / "krx" / f"{api_id}.md").read_text(encoding="utf-8")
+    block = text.split("### response - OutBlock_1", 1)[1].split("### request Sample", 1)[0]
+    rows = [line for line in block.splitlines() if line.startswith("|") and not line.startswith("|---") and not line.startswith("| Name")]
+    return [line.split("|")[1].strip() for line in rows]
+
+
+@pytest.mark.parametrize("fixture,service", [(s, s) for s in SERVICES] + [("etf_holiday", "etf")])
+def test_fixture_fields_match_spec(cfg, fixture, service):
+    api_id = cfg["krx"]["services"][service].split("/")[-1]
+    rows = json.loads(fixture_text(fixture))["OutBlock_1"]
+    assert len(rows) >= 2
+    for row in rows:
+        assert list(row) == spec_fields(api_id), (fixture, api_id)
+        assert all(isinstance(v, str) and "," not in v and v != "-" for v in row.values())   # 실측 표기: 쉼표·'-' 없음, 결측은 빈 문자열
+
+
+def test_fixtures_reflect_measured_shapes():
+    etf = json.loads(fixture_text("etf"))["OutBlock_1"]
+    assert any(not r["ISU_CD"].isdigit() and len(r["ISU_CD"]) == 6 for r in etf)        # 영문자 포함 6자리 코드
+    holiday = json.loads(fixture_text("etf_holiday"))["OutBlock_1"]
+    assert all(r["TDD_OPNPRC"] == r["TDD_CLSPRC"] == r["NAV"] == "" and r["LIST_SHRS"] for r in holiday)
+    kosdaq = json.loads(fixture_text("stock_kosdaq"))["OutBlock_1"]
+    assert {r["SECT_TP_NM"] for r in kosdaq} == {"우량기업부", "관리종목(소속부없음)"}
+    kospi = json.loads(fixture_text("stock_kospi"))["OutBlock_1"]
+    assert any(r["TDD_OPNPRC"] == r["TDD_HGPRC"] == r["TDD_LWPRC"] == r["ACC_TRDVOL"] == "0" and r["TDD_CLSPRC"] != "0" for r in kospi)
+
+
+def test_401_warning_has_no_attempt_counter(cfg, caplog):
+    client, _, _, _ = make_client(cfg, [FakeResponse(401, '{"respMsg":"Unauthorized API Call","respCode":"401"}'),
+                                        FakeResponse(503, "x"), FakeResponse(200, fixture_text("etf"))])
+    with caplog.at_level("WARNING"):
+        with pytest.raises(KrxAuthError):
+            client.fetch("stock_kosdaq", "2026-09-18")
+    assert "(시도" not in caplog.text and "재시도 없음" in caplog.text
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        client.fetch("etf", "2026-09-18")
+    assert "(시도 1/3)" in caplog.text                                               # 5xx 재시도만 시도 횟수를 표기

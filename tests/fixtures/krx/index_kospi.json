@@ -5,8 +5,8 @@
       "IDX_CLSS": "KOSPI",
       "IDX_NM": "코스피",
       "CLSPRC_IDX": "3000.00",
-      "CMPPREVDD_IDX": "0.00",
-      "FLUC_RT": "0.00",
+      "CMPPREVDD_IDX": "-10.50",
+      "FLUC_RT": "-0.35",
       "OPNPRC_IDX": "2990.00",
       "HGPRC_IDX": "3010.00",
       "LWPRC_IDX": "2980.00",
@@ -19,14 +19,28 @@
       "IDX_CLSS": "KOSPI",
       "IDX_NM": "코스피 200",
       "CLSPRC_IDX": "400.00",
-      "CMPPREVDD_IDX": "0.00",
-      "FLUC_RT": "0.00",
+      "CMPPREVDD_IDX": "1.25",
+      "FLUC_RT": "0.31",
       "OPNPRC_IDX": "399.00",
       "HGPRC_IDX": "401.00",
       "LWPRC_IDX": "398.00",
       "ACC_TRDVOL": "100000000",
       "ACC_TRDVAL": "8000000000000",
       "MKTCAP": "2000000000000000"
+    },
+    {
+      "BAS_DD": "20260918",
+      "IDX_CLSS": "KOSPI",
+      "IDX_NM": "코스피 (외국주포함)",
+      "CLSPRC_IDX": "",
+      "CMPPREVDD_IDX": "",
+      "FLUC_RT": "",
+      "OPNPRC_IDX": "",
+      "HGPRC_IDX": "",
+      "LWPRC_IDX": "",
+      "ACC_TRDVOL": "400100000",
+      "ACC_TRDVAL": "10000100000000",
+      "MKTCAP": "2500100000000000"
     }
   ]
 }

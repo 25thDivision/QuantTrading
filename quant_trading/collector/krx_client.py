@@ -143,17 +143,22 @@ class KrxClient:
                                    elapsed_sec=elapsed, rows=rows)
             text = resp.text or ""
             head = self._scrub(text[:BODY_HEAD_LEN])
-            log.warning("%s http=%d 소요=%.2fs (시도 %d/%d)", where, status, elapsed, attempt + 1, self.retries + 1)
-            if status == 429:
-                raise KrxQuotaError(f"{where} http={status} 한도 초과: {head!r}", http_status=status, elapsed_sec=elapsed)
-            if status == 401 or AUTH_MARK in text:
-                raise self._auth_error(where, status, text, head, elapsed)
-            if any(mark in text.lower() for mark in QUOTA_MARKS):
-                raise KrxQuotaError(f"{where} http={status} 한도 초과로 보이는 응답: {head!r}",
-                                    http_status=status, elapsed_sec=elapsed)
-            if status >= 500:
+            if status >= 500:          # 재시도 대상: 5xx 만 시도 횟수를 표기한다
+                log.warning("%s http=%d 소요=%.2fs (시도 %d/%d)", where, status, elapsed, attempt + 1, self.retries + 1)
                 last, last_status = f"http={status} body={head!r}", status
                 continue
+            # 아래는 재시도하지 않는 오류 - 시도 횟수 없이 기록
+            if status == 429:
+                log.warning("%s http=%d 소요=%.2fs 한도 초과 - 재시도 없음", where, status, elapsed)
+                raise KrxQuotaError(f"{where} http={status} 한도 초과: {head!r}", http_status=status, elapsed_sec=elapsed)
+            if status == 401 or AUTH_MARK in text:
+                log.warning("%s http=%d 소요=%.2fs 인증 오류 - 재시도 없음", where, status, elapsed)
+                raise self._auth_error(where, status, text, head, elapsed)
+            if any(mark in text.lower() for mark in QUOTA_MARKS):
+                log.warning("%s http=%d 소요=%.2fs 한도 초과로 보이는 응답 - 재시도 없음", where, status, elapsed)
+                raise KrxQuotaError(f"{where} http={status} 한도 초과로 보이는 응답: {head!r}",
+                                    http_status=status, elapsed_sec=elapsed)
+            log.warning("%s http=%d 소요=%.2fs 응답 형식 오류 - 재시도 없음", where, status, elapsed)
             raise KrxResponseError(f"{where} http={status} {ROWS_KEY} 없음 또는 JSON 아님: {head!r}",
                                    http_status=status, elapsed_sec=elapsed)
         raise KrxTransientError(f"{where} 재시도 {self.retries}회 후에도 실패: {last}",

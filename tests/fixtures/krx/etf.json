@@ -5,8 +5,8 @@
       "ISU_CD": "999960",
       "ISU_NM": "픽스처ETF A",
       "TDD_CLSPRC": "10000",
-      "CMPPREVDD_PRC": "0",
-      "FLUC_RT": "0.00",
+      "CMPPREVDD_PRC": "50",
+      "FLUC_RT": "0.50",
       "NAV": "10005.12",
       "TDD_OPNPRC": "9990",
       "TDD_HGPRC": "10010",
@@ -18,12 +18,12 @@
       "LIST_SHRS": "10000000",
       "IDX_IND_NM": "픽스처지수 A",
       "OBJ_STKPRC_IDX": "1000.00",
-      "CMPPREVDD_IDX": "0.00",
-      "FLUC_RT_IDX": "0.00"
+      "CMPPREVDD_IDX": "5.00",
+      "FLUC_RT_IDX": "0.50"
     },
     {
       "BAS_DD": "20260918",
-      "ISU_CD": "999950",
+      "ISU_CD": "0999T0",
       "ISU_NM": "픽스처ETF B",
       "TDD_CLSPRC": "20000",
       "CMPPREVDD_PRC": "0",
@@ -37,10 +37,10 @@
       "MKTCAP": "40000000000",
       "INVSTASST_NETASST_TOTAMT": "40021000000",
       "LIST_SHRS": "2000000",
-      "IDX_IND_NM": "픽스처지수 B",
-      "OBJ_STKPRC_IDX": "1000.00",
-      "CMPPREVDD_IDX": "0.00",
-      "FLUC_RT_IDX": "0.00"
+      "IDX_IND_NM": "픽스처해외지수 B",
+      "OBJ_STKPRC_IDX": "",
+      "CMPPREVDD_IDX": "",
+      "FLUC_RT_IDX": ""
     }
   ]
 }

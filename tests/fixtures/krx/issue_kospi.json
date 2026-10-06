@@ -5,8 +5,8 @@
       "ISU_SRT_CD": "005930",
       "ISU_NM": "삼성전자보통주",
       "ISU_ABBRV": "삼성전자",
-      "ISU_ENG_NM": "FixtureSamsung",
-      "LIST_DD": "20000104",
+      "ISU_ENG_NM": "SamsungElectronics",
+      "LIST_DD": "1975/06/11",
       "MKT_TP_NM": "KOSPI",
       "SECUGRP_NM": "주권",
       "SECT_TP_NM": "",
@@ -17,15 +17,15 @@
     {
       "ISU_CD": "KR7999991009",
       "ISU_SRT_CD": "999990",
-      "ISU_NM": "픽스처무체결보통주",
-      "ISU_ABBRV": "픽스처무체결",
-      "ISU_ENG_NM": "FixtureNoTrade",
-      "LIST_DD": "20000104",
+      "ISU_NM": "픽스처무액면종류주권",
+      "ISU_ABBRV": "픽스처무액면",
+      "ISU_ENG_NM": "FixtureNoPar",
+      "LIST_DD": "2020/01/06",
       "MKT_TP_NM": "KOSPI",
       "SECUGRP_NM": "주권",
       "SECT_TP_NM": "",
-      "KIND_STKCERT_TP_NM": "보통주",
-      "PARVAL": "무액면",
+      "KIND_STKCERT_TP_NM": "종류주권",
+      "PARVAL": "0",
       "LIST_SHRS": "10000000"
     }
   ]
