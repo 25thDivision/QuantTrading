@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,15 @@ ENVS = ("real", "paper")
 
 class TokenError(RuntimeError):
     """접근토큰을 확보하지 못한 경우 (스윕 진행 불가)."""
+
+
+@dataclass
+class RawResponse:
+    """request_raw 의 결과 - 상태 코드, 응답 헤더(소문자 키), JSON 본문(아니면 None), 본문 앞부분."""
+    http_status: int
+    headers: dict[str, str]
+    body: Any
+    text: str
 
 
 class KisQuoteClient:
@@ -189,6 +199,17 @@ class KisQuoteClient:
             "FID_FAKE_TICK_INCU_YN": self.daily_fake_tick,
         }
         return self._get_candles(self.daily_path, self.daily_tr_id, params, f"{symbol} {date_yyyymmdd} {hour}")
+
+    def request_raw(self, path: str, tr_id: str, params: dict[str, str]) -> RawResponse:
+        """임의 조회 TR 1회 (재시도·재발급 없음) - 프로브 전용. 토큰·헤더·리미터는 공유, 응답은 가공 없이 돌려준다."""
+        self.limiter.wait()
+        resp = self.session.get(self.base_url + path, headers=self._headers(tr_id), params=params, timeout=self.timeout)
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        return RawResponse(http_status=resp.status_code, headers={k.lower(): v for k, v in resp.headers.items()},
+                           body=body, text=resp.text[:500])
 
     def _get_candles(self, path: str, tr_id: str, params: dict[str, str], label: str) -> QuoteResponse:
         """분봉 조회 공통 루프.

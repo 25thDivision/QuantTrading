@@ -117,6 +117,16 @@ krx:                # KRX 공식 Open API (결정 12) - 일 단위 시장 데이
     on_new_symbol: true         # 일별매매에 최근 스냅샷에 없는 종목이 등장하면 그 날짜도 호출
     forward: daily              # 정규 배치(어제)는 매일 호출
 
+kis:                # 한국투자증권 일 단위 조회 (결정 12). 지시 문안 3은 프로브(scripts/sweep_kis.py)만, 휴장일 수집은 문안 4
+  holiday:                      # 국내휴장일조회 [국내주식-040] - 모의투자 미지원, k12 실전 키로만. 공식 개요 "1일 1회" 권고
+    tr_id: CTCA0903R
+    path: /uapi/domestic-stock/v1/quotations/chk-holiday
+    run_once_per_day: true
+  ksdinfo:                      # 예탁원정보 (corporate_actions 원천 후보 3종) - 모의투자 미지원. 필드·파라미터는 docs/specs/kis/ksdinfo-*.md
+    rev_split:    {tr_id: HHKDB669105C0, path: /uapi/domestic-stock/v1/ksdinfo/rev-split}      # 액면교체일정 [148], MARKET_GB 있음
+    bonus_issue:  {tr_id: HHKDB669101C0, path: /uapi/domestic-stock/v1/ksdinfo/bonus-issue}    # 무상증자일정 [144]
+    merger_split: {tr_id: HHKDB669104C0, path: /uapi/domestic-stock/v1/ksdinfo/merger-split}   # 합병/분할일정 [147]
+
 alerts:             # alerts 채널 사이렌 기준 (결정 11 "보호됨 집계와 사이렌 조건"). 장부상 error 1건 이상이면 기준과 무관하게 발송
   protected_ratio: 0.30         # 보호됨 / 처리 종목 수(건너뜀 제외) 가 이 값 이상이고 (초기값은 어림)
   protected_count: 20           # 보호됨 건수도 이 값 이상이면 발송 (둘 다 충족)
