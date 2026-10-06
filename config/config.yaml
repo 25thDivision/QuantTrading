@@ -104,8 +104,15 @@ krx:                # KRX 공식 Open API (결정 12) - 일 단위 시장 데이
   timeout_sec: 30
   retries: 2                    # 네트워크 오류·5xx에 한해 retry_backoff_sec 간격 즉시 재시도
   retry_backoff_sec: 2.0
-  daily_budget: 7000            # 인증키당 일일 한도 10,000회 대비 여유. 지금은 값만 둔다 (집계·차단은 지시 문안 2 이후)
+  daily_budget: 7000            # 인증키당 일일 한도 10,000회 대비 여유. 한국 날짜별 krx_call_log 건수가 닿으면 --load 즉시 중단
   history_start: "2010-01-04"   # 최초 제공일 (ISO 문자열)
+  history_order: desc           # 과거 적재 순서 (desc = 최근부터). 정규 배치와 과거 적재는 같은 --load 가 예산 안에서 이어간다
+  empty_finalize_after_days: 7  # 빈 응답 날짜를 휴장일로 확정하는 경과일. 그 전엔 pending 으로 두고 다음 실행에서 재시도 (갱신 지연 오판 방지)
+  daily_run_at: "08:15"         # k12 타이머 시각 (전일분 갱신 08:00 이후). deploy/systemd/krx-daily.timer 의 OnCalendar 와 일치시킬 것
+  issue_info:                   # 종목기본정보 호출 조건 (결정 12)
+    history: monthly_first_trading_day   # 과거 적재: 달에 스냅샷이 없으면 처음 만나는 거래일에 호출 (desc 순서에서는 그 달의 마지막 거래일로 근사)
+    on_new_symbol: true         # 일별매매에 최근 스냅샷에 없는 종목이 등장하면 그 날짜도 호출
+    forward: daily              # 정규 배치(어제)는 매일 호출
 
 alerts:             # alerts 채널 사이렌 기준 (결정 11 "보호됨 집계와 사이렌 조건"). 장부상 error 1건 이상이면 기준과 무관하게 발송
   protected_ratio: 0.30         # 보호됨 / 처리 종목 수(건너뜀 제외) 가 이 값 이상이고 (초기값은 어림)

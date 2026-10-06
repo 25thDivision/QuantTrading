@@ -197,7 +197,7 @@ def script(monkeypatch, tmp_path):
 
 def test_main_without_probe_exits_2(script, capsys):
     assert script.main(["--date", "2026-09-18"]) == 2
-    assert "적재 모드는 미구현(지시 문안 2)" in capsys.readouterr().out
+    assert "--probe 또는 --load 를 지정하십시오" in capsys.readouterr().out
 
 
 def test_main_missing_key_exits_2(script, monkeypatch, capsys, caplog):
