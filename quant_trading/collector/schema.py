@@ -1,4 +1,4 @@
-"""SQLite 스키마 - Phase 0-B 범위는 수집 관련 두 테이블(candles_1m, collector_log)만.
+"""SQLite 스키마 - 분봉 수집 두 테이블(candles_1m, collector_log). KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
 
 설계 근거 (DECISIONS.md 결정 11, ARCHITECTURE.md 2절):
 - candles_1m: 원본가 불변 저장. (symbol, ts) 복합 PK 로 재실행 멱등(UPSERT). ts 는 API 분봉 라벨을
@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from quant_trading.collector.krx_schema import KRX_SCHEMA_SQL
 from quant_trading.config import resolve_path
 
 SCHEMA_SQL = """
@@ -62,4 +63,5 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA_SQL)
+    conn.executescript(KRX_SCHEMA_SQL)      # KRX 일 단위 테이블 (결정 12) - 같은 파일
     return conn
