@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from quant_trading.broker.lock import LockBusy, env_lock, lock_path
+from quant_trading.broker.lock import LockBusy, env_lock, file_lock, lock_path, named_lock_path
 from quant_trading.collector.sweep import SweepResult
 from quant_trading.config import ConfigError, load_config
 
@@ -28,7 +28,7 @@ def cfg(tmp_path):
 
 
 def test_config_lock_block():
-    assert load_config()["broker"]["lock"] == {"dir": "data/locks", "wait_log_sec": 60}
+    assert load_config()["broker"]["lock"] == {"dir": "data/locks", "retry_sec": 5, "wait_log_sec": 60}
 
 
 def test_lock_creates_dir_and_records_holder(cfg, tmp_path, caplog):
@@ -58,15 +58,15 @@ def test_waiting_holder_acquires_after_first_releases(cfg, caplog):
 
     def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
-        if len(slept) == 2:                                                        # 두 번째 대기 중에 앞 프로세스가 끝난 상황
+        if len(slept) == 13:                                                       # 65초째 대기 중에 앞 프로세스가 끝난 상황
             first.close()
 
     with caplog.at_level("INFO"):
         with env_lock(cfg, "paper", sleep=fake_sleep) as path:
             assert path.read_text(encoding="utf-8").startswith(f"pid={os.getpid()} ")
-    assert slept == [60.0, 60.0]                                                   # config broker.lock.wait_log_sec
+    assert slept == [5.0] * 13                                                     # 재시도 5초 (config broker.lock.retry_sec)
     messages = [r.getMessage() for r in caplog.records if r.name == "quant_trading.broker.lock"]
-    assert [BUSY_LOG in m for m in messages[-3:]] == [True, True, False]           # 대기 로그 2회 뒤 획득 로그
+    assert [BUSY_LOG in m for m in messages] == [True, True, False]                # 대기 로그는 0초·60초 두 번, 그 뒤 획득 로그
     assert messages[-1].startswith("잠금 획득, 실행 시작")
 
 
@@ -89,7 +89,7 @@ def test_lock_blocks_across_processes(cfg, tmp_path):
     holder_code = (
         "import sys\n"
         "from quant_trading.broker.lock import env_lock\n"
-        "cfg = {'broker': {'lock': {'dir': sys.argv[1], 'wait_log_sec': 60}}}\n"
+        "cfg = {'broker': {'lock': {'dir': sys.argv[1], 'retry_sec': 5, 'wait_log_sec': 60}}}\n"
         "with env_lock(cfg, 'paper', wait=False):\n"
         "    print('held', flush=True)\n"
         "    sys.stdin.readline()\n"
@@ -153,3 +153,14 @@ def test_main_takes_and_releases_lock(script, cfg):
     assert script.main(["--env", "paper", "--no-wait"]) == 0                       # 앞 실행이 끝나면 잠금이 풀려 있다
     with env_lock(cfg, "paper", wait=False):
         pass
+
+
+def test_named_lock_is_independent_from_env_locks(cfg, caplog):
+    """KRX 적재용 이름 잠금(krx.lock)은 kis_<env>.lock 과 서로 막지 않는다."""
+    with env_lock(cfg, "real", wait=False), file_lock(cfg, "krx", label="krx", wait=False) as p:
+        assert p == named_lock_path(cfg, "krx") and p.name == "krx.lock"
+        with caplog.at_level("WARNING"):
+            with pytest.raises(LockBusy):
+                with file_lock(cfg, "krx", label="krx", wait=False):
+                    pytest.fail("같은 이름 잠금이 겹쳐 잡혔다")
+        assert "다른 수집 프로세스 실행 중(krx, 잠금 파일=" in caplog.text
