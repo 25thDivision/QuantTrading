@@ -1,7 +1,7 @@
 # ARCHITECTURE.md - 구현 지침
 
 > Claude Code 및 구현 채팅이 참조하는 설계도. 결정의 근거와 수치는 DECISIONS.md가 원본이며, 충돌 시 DECISIONS.md가 우선한다.
-> 최종 갱신: 2026-09-30
+> 최종 갱신: 2026-10-06 (2차)
 
 ---
 
@@ -27,8 +27,9 @@
 
 **모듈 목록**
 ```
-collector      시세 수집. 분봉 = 한국투자증권 마감 후 REST 스윕 배치 (결정 11, 가동 중 2026-09-22~) /
-               일 단위 시장 데이터 = KRX 공식 API 일별 배치 + 과거 적재 (결정 12, Phase 1 구현 중)
+collector      시세·종목 상태 수집. 분봉 = 한국투자증권 마감 후 REST 스윕 배치 (결정 11, 가동 중 2026-09-22~) /
+               지정내역 = 종목정보파일 플래그 일별 스냅샷 2회 (결정 12, 지시 문안 3) / 휴장일 = 국내휴장일조회 k12 실전 키 하루 1회 (결정 12, 지시 문안 4 예정) /
+               일 단위 시장 데이터 = KRX 공식 API (결정 12). 클라이언트·프로브 구현 완료(2026-09-30), 적재는 지시 문안 2
 strategy/      전략 플러그인들 (1a.py, 1b.py, 1bp.py, 2c.py, ...)
 portfolio      자본 배분, 포지션 크기 산출(고정 리스크), 슬롯 관리(레버리지/파킹/대체)
 execution      주문 전송·체결 확인·재시도·취소. 레이트 리미터 내장(한국투자증권 초당 호출 제한 대응)
@@ -58,18 +59,33 @@ collector_log  수집 장부. PK (trade_date, symbol, kind) WITHOUT ROWID. kind 
 ```
 - 완전성 판정·장부 보호·재시도·소급 규칙은 DECISIONS.md 결정 11(견고화 절)이 원본
 
-KRX 일 단위 데이터 초안 (결정 12 - 테이블·컬럼명은 프로브 결과 확인 후 지시 문안 2에서 확정. 값은 KRX가 문자열로 주므로 적재 시 숫자 변환, 원본가 불변):
+KRX 일 단위 데이터 (결정 12, 구성 확정 2026-10-06 - 컬럼명은 지시 문안 2에서 최종 확정. 빈 문자열만 NULL, "0"은 값, 정수·실수 타입 변환, 원본가 불변):
 ```
-daily_stock     코스피·코스닥 일봉. PK (market, symbol, trade_date). 시가/고가/저가/종가(정규시장),
-                거래량/거래대금(시간외·애프터마켓 포함 전체), 시가총액, 상장주식수, 소속부, source(API ID)
-daily_etf       ETF 일봉 + NAV·순자산총액·상장좌수·기초지수명·기초지수 종가
-daily_index     코스피 계열 지수 일봉 (계열구분·지수명·시가/고가/저가/종가·거래량·거래대금·상장시가총액)
-issue_info      종목기본정보 스냅샷. PK (market, symbol, as_of). 표준코드·단축코드·명·상장일·증권구분·주식종류·액면가·상장주식수
-calendar_krx    KRX 거래일 캘린더. 과거는 daily_stock 호출의 빈 응답으로 사후 판정, 현재·미래는 소스 확정 후
-features_daily  종목·날짜별 지표 (변동폭 3종, 거래대금 20일 평균·중앙값, 시총, 상장 경과일 등). 유니버스 모듈 산출
+daily_stock     주권 일봉, 코스피·코스닥 공유. PK (market, symbol, trade_date). market은 호출 서비스에서(kospi/kosdaq),
+                symbol 6자리 TEXT. 시가/고가/저가/종가(정규시장), 거래량/거래대금(시간외·애프터마켓 포함 전체),
+                시가총액, 상장주식수, 대비, 등락률, 종목명, 소속부, fetched_at. 어림 1,140만 행
+daily_etf       ETF 일봉. PK (symbol, trade_date). 주권 필드 + NAV·순자산총액·상장좌수·기초지수명·기초지수 종가/대비/등락률.
+                휴장일 응답(가격 필드 전부 빈 문자열)은 적재하지 않음
+daily_index     코스피 계열 지수 일봉. PK (trade_date, idx_class, idx_name). 지수 마스터 없음(목록 가변, 2010년 41건·2026년 54건)
+issue_info      종목기본정보 스냅샷, 코스피·코스닥 공유. PK (market, symbol, as_of). as_of = 요청 basDd(응답에 날짜 없음).
+                표준코드·정식명·약명·영문명·상장일·증권구분·소속부·주식종류·액면가·상장주식수
+calendar_krx    KRX 거래일 캘린더. PK date. 과거는 코스피 일별매매 응답 행 수 0 = 휴장일, 미래는 소스 확정 후
+krx_call_log    KRX 호출 장부. PK (called_at, service, bas_dd). http_status·rows·duration·outcome·error_text.
+                일일 예산 집계와 과거 적재 재개의 근거. collector_log(분봉 장부)와 분리
+```
+한국투자증권 일 단위 (결정 12, 2026-10-06):
+```
+symbol_status_daily  종목정보파일 지정내역 플래그 스냅샷. PK (snapshot_date, snapshot_kind, symbol). snapshot_kind pre_open(08:50) / post_close(20:30).
+                     group·name·거래정지·정리매매·관리종목·시장경고코드·경고위험예고·단기과열·공매도과열·이상급등·불성실공시·저유동성·우선주구분·상장주식수.
+                     유니버스는 pre_open 판만 읽는다. calendar_krx 미래분은 국내휴장일조회 응답(opnd_yn)으로 채운다
+```
+
+유니버스 모듈 산출물 (Phase 1-4에서 확정):
+```
+features_daily  종목·날짜별 지표 (변동폭 3종, 거래대금 20일 평균·중앙값, 시총, 상장 경과일 등)
 universe_log    날짜 × 전략 슬롯 × 종목 + 사용 설정 해시
-krx_call_log    KRX 호출 장부 (날짜 × 서비스 × 기준일 × 상태·행 수·호출 시각). 일일 예산 집계와 과거 적재 재개의 근거
 ```
+분봉(candles_1m)과는 symbol(6자리)과 trade_date로 조인한다. 일 단위 지표·③ 백테스트는 KRX 테이블, 장중 판단·①·층 1·체결 시뮬은 분봉, 겹치는 기간은 품질 대조에 쓴다.
 
 스키마 초안 (구현 시 구체화 - candles_1m·collector_log는 구현 완료로 위 블록 참조):
 ```
@@ -122,7 +138,7 @@ decisions_log   층 2·3 발동, 승격/강등, 예외 발동 한 줄 로그
 | 무인 복구 | AC 자동부팅 → netplan(optional:true) → Tailscale → SSH 사슬 전체 실증 완료. 완전 정지 시 가족 수동 재부팅 요청 |
 | 개발 환경 | **랩실 서버** (Dell Precision 7920 Tower, Xeon Silver 4214R×2, Ubuntu 24.04, stl 계정, SSH 접속). 시스템 Python 버전과 무관하게 프로젝트는 uv가 3.12를 조달 |
 | 저장소 | GitHub 25thDivision/QuantTrading (private), 기본 브랜치 master. k12 체크아웃: /home/seokhyeon/QuantTrading (2026-09-18 배포) |
-| 상주 서비스 | **collector.timer 20:30 (2026-09-22 활성화, 현재 월~금, 매일 기동으로 변경 예정 - 결정 11)** + collector.service (TimeoutStartSec=6h - 실측 217~222분 기반, Restart=on-failure, RestartSec=5min). 휴장일·주말 실행은 최근 거래일 재시도로 무해. KRX 일별 배치 timer(08:00 이후)·과거 적재는 Phase 1 구현 예정 |
+| 상주 서비스 | **collector.timer 20:30** (2026-09-22 활성화. 유닛 파일은 매일 기동으로 변경 완료 2026-09-30, k12 반영은 push 후 deploy_units.sh - 그 전까지 k12는 월~금) + collector.service (TimeoutStartSec=6h - 실측 217~222분 기반, Restart=on-failure, RestartSec=5min). 휴장일·주말 실행은 최근 거래일 재시도로 무해. 지시 문안 3에서 추가: krx-daily.timer(08:15, 상태 주도 적재 - 과거 적재도 같은 유닛이 일일 예산 안에서 이어감), symbol-status-preopen.timer(08:50 종목정보파일 장 전 판 스냅샷). 휴장일 수집은 지시 문안 4 |
 | 배포 | 코드: 랩실 push → k12 pull → uv sync. 유닛: scripts/deploy_units.sh (복사 → daemon-reload, 결정 8). 잔여 없음 |
 
 **역할 분담 (결정 8 반영)**
@@ -139,25 +155,40 @@ decisions_log   층 2·3 발동, 승격/강등, 예외 발동 한 줄 로그
 구현 완료 부분 (config/config.yaml - 키 이름은 2026-09-22 구현 기준, 값은 예시):
 ```yaml
 collector:
-  symbol_source: {file: kospi_code.mst, groups: [ST, EF], common_only: false}   # 우선주 포함
+  symbol_source: {file: kospi_code.mst, groups: [ST, EF], common_only: false}   # 우선주 포함. ST = KRX 주권과 코드 일치(2026-10-06 대조)
+  symbol_status: {pre_open_time: "08:50", post_close: with_sweep}            # 지정내역 플래그 스냅샷 2회 (결정 12, 지시 문안 3)
   backfill_api: FHKST03010230
   max_consecutive_date_mismatch: 5      # 연속 불일치 시 "수집 창 닫힘" 중단
   transient_codes: [EGW00316]           # retries·backoff_sec 동반 (2회, 2초)
+collector:
+  rate_per_sec: {real: 15, paper: 1}    # 실전 한도 18건/초 대비 여유 (실제 config 위치는 collector 아래 - 2026-10-06 정정)
 broker:
-  rate_per_sec: {real: 15, paper: 1}    # 실전 한도 18건/초 대비 여유. 리미터는 프로세스 내부 - 동시 실행은 env별 파일 잠금으로 차단 (결정 11)
-  lock: {dir: data/locks, wait: true}   # --no-wait 로 즉시 종료 선택 (구현 예정)
-alerts:
-  protected_ratio: 0.30                 # 보호됨 비율 사이렌 기준 (구현 예정, 어림값)
+  lock: {dir: data/locks, wait_log_sec: 60}   # 구현 완료 2026-09-30. env별 파일 잠금, 대기 기본, --no-wait 로 즉시 종료.
+                                              # 재시도 주기 = 로그 주기(60초). 5초/60초 분리는 지시 문안 2
+alerts:                                 # 구현 완료 2026-09-30 (config 최상위)
+  protected_ratio: 0.30                 # 보호됨 비율 사이렌 기준 (어림값)
   protected_count: 20                   # 보호됨 건수 사이렌 기준 (둘 다 충족 시 발송)
-krx:                                    # 결정 12 (구현 예정, 키 이름은 지시 문안에서 확정)
+krx:                                    # 결정 12. 클라이언트·프로브 구현 완료 2026-09-30, 적재 관련 키는 지시 문안 2에서 확정
   base_url: https://data-dbg.krx.co.kr/svc/apis
-  services: {stock_kospi: sto/stk_bydd_trd, stock_kosdaq: sto/ksq_bydd_trd, etf: etp/etf_bydd_trd,
-             index_kospi: idx/kospi_dd_trd, issue_kospi: sto/stk_isu_base_info, issue_kosdaq: sto/ksq_isu_base_info}
-  daily_budget: 7000                    # 인증키당 한도 10,000 대비 여유
+  services:                             # 키의 첫 토큰(stock/etf/index/issue)이 서비스 종류 - 프로브 출력 규약
+    stock_kospi:  sto/stk_bydd_trd
+    stock_kosdaq: sto/ksq_bydd_trd
+    etf:          etp/etf_bydd_trd
+    index_kospi:  idx/kospi_dd_trd
+    issue_kospi:  sto/stk_isu_base_info
+    issue_kosdaq: sto/ksq_isu_base_info
   rate_per_sec: 1
-  history_start: 2010-01-04
-  issue_info: {history: monthly_first_trading_day, on_new_symbol: true, forward: daily}
-  daily_run_after: "08:00"              # 전일분 갱신 시각 (Asia/Seoul)
+  timeout_sec: 30
+  retries: 2
+  retry_backoff_sec: 2.0
+  daily_budget: 7000                    # 인증키당 한도 10,000 대비 여유 (집계·차단은 지시 문안 2)
+  history_start: "2010-01-04"           # 따옴표 필수 - YAML 날짜 객체 방지
+  issue_info: {history: monthly_first_trading_day, on_new_symbol: true, forward: daily}   # 지시 문안 2
+  daily_run_at: "08:15"                 # 전일분 갱신(08:00) 이후 상태 주도 적재, 지시 문안 3
+  history_order: desc                   # 과거 적재 순서(최근 → 과거). 지시 문안 3
+  empty_finalize_after_days: 7          # 빈 응답 날짜를 휴장일로 확정하는 경과일(그 전엔 pending 재시도)
+kis:                                    # 한국투자증권 일 단위 (결정 12). 지시 문안 3은 프로브만, 수집은 문안 4
+  holiday: {run_once_per_day: true}     # 국내휴장일조회 1일 1회 권고
 notify:
   discord: {webhooks: ...}              # 값은 .env (DISCORD_WEBHOOK_COLLECTOR/_PAPER/_LIVE/_ALERTS)
 ```
@@ -184,6 +215,8 @@ markets:
       # KRX 프리마켓은 추후 도입 보도 - 시행 확인 후 추가
     day:                       # 유니버스 정의는 전략 블록별 (결정 12). 오디션 후보는 슬롯의 유니버스 설정을 공유
       universe:
+        share_kind: ["보통주"]             # KRX 주식종류 값 그대로. 우선주·종류주권 제외 (결정 12)
+        security_groups: ["주권"]          # KRX 증권구분 값 그대로. 실전 기본값, 연구용은 자유 (결정 12)
         volatility: {measure: hl_over_prev_close, window: 20, min_pct: 0.025}   # 대안 hl_over_open, atr_over_prev_close
         amount:     {agg: mean, window: 20, min_krw: 10_000_000_000}          # agg 대안 median - 적재 후 실측으로 결정
         mktcap_min: 500_000_000_000
@@ -193,7 +226,8 @@ markets:
       max_positions: 1
       price_cap: 200_000
     swing:
-      universe: {amount: {agg: mean, window: 20, min_krw: 1_000_000_000}, mktcap_min: 300_000_000_000, common_only: true}
+      universe: {share_kind: ["보통주"], security_groups: ["주권"], amount: {agg: mean, window: 20, min_krw: 1_000_000_000}, mktcap_min: 300_000_000_000}
+      market_filter: {index_class: "KOSPI", index_name: "코스피 200"}   # KRX 응답 문자열 그대로. 기준선·판정 시점은 ③ 전략 설계 시 (결정 12)
       stop: -0.15
       positions: 7
       price_cap: 160_000
@@ -217,7 +251,7 @@ personal_bot:       # 개인 자동화 봇 (결정 8·9)
 | 세션 0 | 저장소 부트스트랩: 골격·문서 배치·설정 골격만 (기능 코드 없음) | 별도 지시 문안으로 진행 |
 | 0-A | 저장소 구조 반영(결정 10) + API 실스펙 실측·문서 확인 | **완료 (2026-09-14)** - 실측 결과는 DECISIONS.md 결정 9·11과 11절에 반영 |
 | 0-B | **분봉 스윕 수집기**(결정 11) + SQLite 스키마 + systemd 유닛·타이머 + 디스코드 알림 기초 + 견고화(수정 3·4) | **완료 (2026-09-22)** - 테스트 44건, 검증 스윕 통과(KRX 공식 대조), collector.timer 가동. 이월 항목(M-3 실험, 장부 정리) 2026-09-30 종결 |
-| 1 | 데이터 파이프라인 (결정 12). 범위 (A): ③ 백테스트·유니버스 필수분 우선 | **진행 중 (2026-09-28 착수)**. 세부: 1-1 KRX 클라이언트 + 프로브 + 기존 수집기 보강(보호됨 집계·잠금·소급 대상 집합·타이머 매일) → 1-2 프로브 결과로 스키마·config 확정 → 1-3 KRX 일별 배치·과거 적재(일일 예산)·한국투자증권 지정내역·캘린더 수집기(카탈로그 실측 후) → 1-4 Parquet 내보내기 timer + pull 스크립트 + 유니버스 모듈(features_daily·universe_log) → 1-5 검증(KRX 일봉 vs 분봉 집계 대조, 유니버스 손검증, 적재 장부 구멍 없음). 병행: Claude Code의 한국투자증권 카탈로그 조사 |
+| 1 | 데이터 파이프라인 (결정 12). 범위 (A): ③ 백테스트·유니버스 필수분 우선 | **진행 중 (2026-09-28 착수)**. 1-1 KRX 클라이언트 + 프로브 + 기존 수집기 보강(보호됨 집계·잠금·소급 대상 집합·타이머 매일): **완료 2026-09-30** (커밋 7건, 테스트 108건, 프로브 실행 2026-10-01) → 1-2 스키마·config 확정: **완료 2026-10-06** (결정 12) → 1-3 KRX 일별 배치·과거 적재(일일 예산) + 종목정보파일 플래그 스냅샷 + 예탁원정보·휴장일 프로브: 지시 문안 3 / 휴장일 수집기: 지시 문안 4 → 1-4 Parquet 내보내기 timer + pull 스크립트 + 유니버스 모듈(features_daily·universe_log) → 1-5 검증(KRX 일봉 vs 분봉 집계 대조, 유니버스 손검증, 적재 장부 구멍 없음, 증권구분별 ③ 필터 통과 수). 병행 완료: 한국투자증권 카탈로그 조사 + 증권구분 코드 대조 (2026-10-06 보고, 결정 12 반영) |
 | 1-후반 | 일 단위 배치류 확장: 투자자별 매매동향, 공매도, 지수 분봉, ETF 구성정보·괴리율, 기업행위(corporate_actions) 수집 자동화 | 소스 확정 후. 1 본편과 분리 |
 | 2 | 백테스트 1차(vectorbt): ③ 2-C (+2-A/2-B), ① 1-A 일봉 근사 | 시장 필터·종목 수·손절 민감도 비교 포함. 실행 머신 결정 선행 (11절) |
 | 3 | 자작 이벤트 엔진 + FillModel + 2차 검증 → **오디션 판정, 층 3 수치 재설정** | 합격 판정의 주체 |
@@ -241,20 +275,21 @@ QuantTrading/
 ├── config/              # 설정 (5절 구조), 시크릿은 .env 별도 (git 제외)
 ├── quant_trading/     # 최상위 패키지 - 자체 코드 본체 (결정 10, editable 설치)
 │   ├── __init__.py    # 각 하위 모듈에도 __init__.py
-│   ├── collector/     # 한국투자증권 분봉 스윕 + KRX 일 단위 배치(구현 예정)
+│   ├── collector/     # 한국투자증권 분봉 스윕 + KRX 클라이언트(krx_client.py)·프로브(krx_probe.py). KRX 적재는 지시 문안 2
 │   ├── strategy/      # 플러그인들 + 공용 인터페이스
 │   ├── portfolio/
 │   ├── execution/
 │   ├── risk/
-│   ├── broker/        # kis_real / kis_paper / 스텁 어댑터
+│   ├── broker/        # kis_real / kis_paper / 스텁 어댑터, ratelimit.py, lock.py(env별 파일 잠금)
 │   ├── backtest/      # vectorbt 스캔, 이벤트 엔진, FillModel
 │   ├── simulator/
 │   ├── notify/
 │   └── bus/           # 메시지 버스 인터페이스 (인메모리 구현)
 ├── deploy/
 │   └── systemd/       # 유닛·슬라이스 파일 원본 (복사식 배포 - 결정 8)
-├── scripts/           # sweep_candles.py(스윕·소급 진입점), deploy_units.sh(유닛 배포), sweep_krx.py(KRX 진입점, --probe 포함 - 구현 예정), m3_probe.py(실험 종료 - 지시 문안 1에서 삭제)
-├── tests/             # 스텁 어댑터 기반 자동 테스트 (2026-09-22 기준 44건)
+├── scripts/           # sweep_candles.py(스윕·소급 진입점, --no-wait), deploy_units.sh(유닛 배포), sweep_krx.py(KRX 진입점, --probe 구현 완료·--load 적재는 지시 문안 3),
+│                      # sweep_kis.py(한국투자증권 일 단위 진입점 - 지시 문안 3에서 프로브 모드, 문안 4에서 휴장일 수집), snapshot_symbols.py(종목정보파일 스냅샷 - 지시 문안 3)
+├── tests/             # 스텁·픽스처 기반 자동 테스트 (2026-09-30 기준 108건), fixtures/krx/(명세서 기준으로 교체 예정)
 ├── data/              # SQLite·Parquet 내보내기 (git 제외)
-└── docs/              # DECISIONS.md, ARCHITECTURE.md 사본 유지
+└── docs/              # DECISIONS.md, ARCHITECTURE.md 사본 유지. specs/<공급자>/ = 외부 명세 원문 + 실측 주석(정본 아님): specs/krx/ 7파일, specs/kis/ README + 13파일(2026-10-06)
 ```
