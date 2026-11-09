@@ -1,0 +1,28 @@
+# QuantTrading 국내휴장일조회 수집기 (결정 12) - k12 전용 oneshot 서비스. kis-holiday.timer 가 매일 07:30 기동한다.
+# 국내휴장일조회(CTCA0903R)로 calendar_krx 의 미래분을 채운다. 모의투자 미지원 - k12 실전 키 전용.
+# 1일 1회 보호: kis_call_log 에 오늘 service='holiday' outcome='ok' 행이 있으면 호출하지 않는다 (--force 로만 우회).
+# 하루 순서: 07:30 휴장일 → 08:15 KRX 적재 → 08:50 종목정보파일 스냅샷 → 20:30 분봉 스윕.
+# 배포: scripts/deploy_units.sh 실행 = deploy/systemd/*.service|*.timer|*.slice 를 /etc/systemd/system/ 에 복사 → daemon-reload.
+#       restart 는 하지 않으므로(타이머 구동) 새 정의는 다음 예약 실행부터 적용. 심볼릭 링크 금지 - 결정 8
+[Unit]
+Description=QuantTrading KIS holiday calendar collector (decision 12, real key only)
+After=network-online.target
+Wants=network-online.target
+# on-failure 재시작이 무한 반복되지 않도록 1시간에 3회로 제한 (이후는 다음 날 타이머가 재기동)
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=seokhyeon
+WorkingDirectory=/home/seokhyeon/QuantTrading
+# .env 는 코드가 직접 읽는다 (EnvironmentFile 은 인라인 주석을 지원하지 않으므로 사용하지 않음)
+# 실전 키는 k12 안에서만 (결정 11). --env 는 기본값이 없으므로 real 을 명시한다
+# uv 는 절대 경로 (%h 치환자는 시스템 유닛에서 root 홈으로 풀릴 수 있어 사용하지 않음)
+ExecStart=/home/seokhyeon/.local/bin/uv run --project /home/seokhyeon/QuantTrading python scripts/sweep_kis.py --holiday --env real
+Restart=on-failure
+RestartSec=5min
+TimeoutStartSec=10min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qt-kis-holiday

@@ -1,0 +1,13 @@
+# QuantTrading 국내휴장일조회 타이머 - 매일 07:30 실행 (KRX 적재 08:15·장 전 스냅샷 08:50 보다 앞).
+# OnCalendar 시각은 config/config.yaml 의 kis.holiday.run_at("07:30") 와 반드시 일치시킬 것 (수동 동기).
+# 휴장일·주말에도 기동한다: 1일 1회 보호(kis_call_log)가 있어 하루에 두 번 호출되지 않는다.
+[Unit]
+Description=Daily trigger for QuantTrading KIS holiday collector (07:30, real key only)
+
+[Timer]
+OnCalendar=*-*-* 07:30:00 Asia/Seoul
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
