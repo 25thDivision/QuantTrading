@@ -7,6 +7,7 @@
   zip 으로 보관(보완 46)하고, 행에는 승격한 플래그 컬럼만 둔다.
 - 파일 신선도(폴백 여부·파일 해시·mtime·경로·행 수·파서 버전)는 헤더 symbol_status_snapshot 에 하루 2행으로 남긴다 (보완 43).
 - 같은 날 같은 kind 재실행은 UPSERT. 유니버스는 pre_open 판만 읽는다.
+- 사이렌(보완 42): 캐시 폴백·원본 보관 실패는 #alerts 한 줄, 최상위 예외는 #alerts 중단 알림 후 전파. #collector 요약은 항상 보낸다.
 """
 from __future__ import annotations
 
@@ -191,6 +192,14 @@ def alert_lines(summary: SnapshotSummary, loaded: SymbolLoadResult) -> list[str]
     return lines
 
 
+def _notify(cfg: dict[str, Any], purpose: str, message: str) -> None:
+    from quant_trading.notify import discord
+    try:
+        discord.send(message, cfg, purpose=purpose)
+    except Exception as exc:  # noqa: BLE001 - 알림 실패가 스냅샷을 막지 않는다
+        log.warning("알림 전송 중 예외(%s): %s", purpose, exc)
+
+
 def run_snapshot(
     cfg: dict[str, Any],
     kind: str,
@@ -200,14 +209,37 @@ def run_snapshot(
     notify: bool = True,
     downloader: Callable | None = None,
 ) -> SnapshotSummary:
-    """진입점용: 다운로드(zip 원본 보관·폴백) → 파싱 → 스냅샷·헤더 적재 → #collector 한 줄. 날짜 기본값은 오늘(한국 날짜)."""
+    """진입점용: 다운로드(zip 원본 보관·폴백) → 파싱 → 스냅샷·헤더 적재 → #collector 한 줄. 날짜 기본값은 오늘(한국 날짜).
+
+    최상위 예외(SymbolSourceError·SchemaMismatchError·예기치 못한 예외)는 #alerts 로 중단 알림을 보낸 뒤 그대로 전파한다
+    (보완 42, runner.run_sweep 과 같은 구조). 알림 실패는 로그 경고만 남긴다.
+    """
+    from quant_trading.notify import discord
+
+    notify = notify and bool(require(cfg, "collector", "notify", "discord"))
+    try:
+        return _run_snapshot(cfg, kind, snapshot_date=snapshot_date, now=now, notify=notify, downloader=downloader)
+    except Exception as exc:
+        if notify:
+            _notify(cfg, discord.PURPOSE_ALERTS, f"[symbol_status] 중단: {exc.__class__.__name__}: {exc}")
+        raise
+
+
+def _run_snapshot(
+    cfg: dict[str, Any],
+    kind: str,
+    *,
+    snapshot_date: str | None,
+    now: datetime | None,
+    notify: bool,
+    downloader: Callable | None,
+) -> SnapshotSummary:
     from quant_trading.collector.schema import connect
     from quant_trading.notify import discord
 
     tz = ZoneInfo(str(require(cfg, "markets", "kospi", "timezone")))
     now = now.astimezone(tz) if now else datetime.now(tz)
     date = snapshot_date or now.date().isoformat()
-    notify = notify and bool(require(cfg, "collector", "notify", "discord"))
     run_id = f"{now:%Y%m%dT%H%M%S}-{os.getpid()}"
     loaded = load_symbols(cfg, downloader=downloader, archive=(date, kind))
     conn = connect(str(require(cfg, "collector", "db_path")))
@@ -216,10 +248,7 @@ def run_snapshot(
     finally:
         conn.close()
     if notify:
-        try:
-            discord.send(summary.message(), cfg, purpose=discord.PURPOSE_COLLECTOR)
-            for line in alert_lines(summary, loaded):
-                discord.send(line, cfg, purpose=discord.PURPOSE_ALERTS)
-        except Exception as exc:  # noqa: BLE001 - 알림 실패가 스냅샷을 막지 않는다
-            log.warning("알림 전송 중 예외: %s", exc)
+        _notify(cfg, discord.PURPOSE_COLLECTOR, summary.message())
+        for line in alert_lines(summary, loaded):
+            _notify(cfg, discord.PURPOSE_ALERTS, line)
     return summary

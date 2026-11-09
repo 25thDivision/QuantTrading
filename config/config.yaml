@@ -111,6 +111,7 @@ krx:                # KRX 공식 Open API (결정 12) - 일 단위 시장 데이
   history_start: "2010-01-04"   # 최초 제공일 (ISO 문자열)
   history_order: desc           # 과거 적재 순서 (desc = 최근부터). 정규 배치와 과거 적재는 같은 --load 가 예산 안에서 이어간다
   empty_finalize_after_days: 7  # 빈 응답 날짜를 휴장일로 확정하는 경과일. 그 전엔 pending 으로 두고 다음 실행에서 재시도 (갱신 지연 오판 방지)
+  max_consecutive_skips: 5      # 일시 오류·응답 형식 오류로 연속 건너뛴 날짜가 이 수에 닿으면 "KRX 장애 추정" 으로 중단 (결정 12 보완 41). 인증·한도 오류는 즉시 중단
   daily_run_at: "08:15"         # k12 타이머 시각 (전일분 갱신 08:00 이후). deploy/systemd/krx-daily.timer 의 OnCalendar 와 일치시킬 것
   issue_info:                   # 종목기본정보 호출 조건 (결정 12)
     history: monthly_first_trading_day   # 과거 적재: 달에 스냅샷이 없으면 처음 만나는 거래일에 호출 (desc 순서에서는 그 달의 마지막 거래일로 근사)

@@ -9,7 +9,12 @@
 - 날짜 단위 트랜잭션: 한 날짜의 모든 서비스를 먼저 호출해 모은 뒤 한 번에 쓴다. 호출 장부는 호출 직후 따로 기록하므로
   날짜가 롤백돼도 예산 집계는 남는다.
 - 예산: 한국 날짜 기준 호출 건수가 krx.daily_budget 에 닿으면 즉시 중단(종료코드 0, 요약에 "예산 도달"). 페이스는 클라이언트 리미터.
-- 호출 실패(인증·한도·일시 오류·형식 오류)는 그 실행을 중단한다. 다음 실행이 같은 날짜부터 다시 계산하므로 체크포인트가 필요 없다.
+- 호출 실패 정책(보완 41): 인증(401)·한도 오류는 그 실행을 즉시 중단한다. 일시 오류(재시도 후에도 실패)·응답 형식 오류는
+  그 날짜만 롤백하고 건너뛴 뒤 계속하며, 연속으로 건너뛴 날짜가 krx.max_consecutive_skips 에 닿으면 "KRX 장애 추정"으로
+  중단한다. 행 단위 숫자 변환 실패(parse_error)는 날짜를 건너뛰지 않는다(현행 격리). 건너뛴 날짜는 calendar_krx·daily_*
+  에 쓰지 않으므로 다음 실행이 자동으로 재시도한다 - 체크포인트가 필요 없다.
+- 사이렌(보완 42): 정상 완료·예산 도달 외 모든 종료와, 정상 완료라도 건너뛴 날짜·행 parse_error 가 1건 이상이면 #alerts.
+  #collector 요약은 성공·실패 무관 항상 보낸다(일지).
 - 한국투자증권 잠금과 무관하므로 kis_<env>.lock 은 잡지 않는다. 같은 머신의 --load 중복은 krx.lock (진입점에서).
 """
 from __future__ import annotations
@@ -43,7 +48,18 @@ PARSE_ERROR_TEXT_LIMIT = 10                                                     
 
 
 class LoadAborted(RuntimeError):
-    """적재를 계속할 수 없는 상황 (인증·한도·일시 오류·응답 형식 오류)."""
+    """적재를 계속할 수 없는 상황 (인증·한도 오류) - 진행 중 날짜는 롤백된다."""
+
+
+class DateSkipped(RuntimeError):
+    """한 날짜만 롤백하고 건너뛴다 (보완 41) - 일시 오류(재시도 후 실패)·응답 형식 오류.
+
+    outcome 은 장부 outcome 문자열(transient / parse_error), service·bas_dd 는 마지막으로 실패한 호출이다.
+    """
+
+    def __init__(self, message: str, *, outcome: str, service: str, bas_dd: str) -> None:
+        super().__init__(message)
+        self.outcome, self.service, self.bas_dd = outcome, service, bas_dd
 
 
 class BudgetReached(RuntimeError):
@@ -56,6 +72,7 @@ class LoadSettings:
     history_order: str
     empty_finalize_after_days: int
     daily_budget: int
+    max_consecutive_skips: int
     issue_on_new_symbol: bool
     issue_forward_daily: bool
     tz: ZoneInfo
@@ -69,6 +86,7 @@ def settings(cfg: dict[str, Any], *, budget: int | None = None) -> LoadSettings:
         history_order=str(require(krx, "history_order")),
         empty_finalize_after_days=int(require(krx, "empty_finalize_after_days")),
         daily_budget=int(budget if budget is not None else require(krx, "daily_budget")),
+        max_consecutive_skips=int(require(krx, "max_consecutive_skips")),
         issue_on_new_symbol=bool(require(issue, "on_new_symbol")),
         issue_forward_daily=str(require(issue, "forward")) == "daily",
         tz=ZoneInfo(str(require(cfg, "markets", "kospi", "timezone"))),
@@ -104,6 +122,8 @@ class LoadResult:
     budget: int = 0
     budget_reached: bool = False
     outcomes: Counter = field(default_factory=Counter)    # 호출 장부 outcome 별 건수
+    skipped_dates: Counter = field(default_factory=Counter)          # 건너뛴 날짜 수 (outcome 별)
+    skipped_list: list[tuple[str, str]] = field(default_factory=list)   # (날짜 ISO, outcome) 순서대로
     abort_reason: str | None = None
 
     @property
@@ -180,7 +200,11 @@ class _Loader:
                        else store.OUTCOME_TRANSIENT if isinstance(exc, KrxTransientError) else store.OUTCOME_PARSE)
             attempts = exc.attempts or (KrxAttempt(exc.http_status, exc.elapsed_sec, None),)
             self._log_attempts(called_at, service, bas_dd, attempts, rows=None, outcome=outcome, error_text=str(exc)[:500])
-            raise LoadAborted(f"{service} {bas_dd} {exc.__class__.__name__}: {exc}") from exc
+            message = f"{service} {bas_dd} {exc.__class__.__name__}: {exc}"
+            if isinstance(exc, (KrxAuthError, KrxQuotaError)):
+                raise LoadAborted(message) from exc
+            # 일시 오류·응답 형식 오류(그 밖의 KrxError)는 그 날짜만 롤백하고 건너뛴다 (보완 41)
+            raise DateSkipped(message, outcome=outcome, service=service, bas_dd=bas_dd) from exc
         outcome = store.OUTCOME_OK if resp.rows else store.OUTCOME_EMPTY
         attempts = resp.attempts or (KrxAttempt(resp.http_status, resp.elapsed_sec, None),)
         self._log_attempts(called_at, service, bas_dd, attempts, rows=len(resp.rows), outcome=outcome, error_text=None)
@@ -332,8 +356,24 @@ def load(
     log.info("KRX 적재 시작: run_id=%s 대상 %d일 (%s ~ %s, %s), 오늘 호출 %d/%d", loader.run_id, len(plans), since_iso,
              until_iso, st.history_order, loader.calls_today, st.daily_budget)
     try:
+        consecutive = 0
         for plan in plans:
-            loader.process(plan)
+            try:
+                loader.process(plan)
+            except DateSkipped as exc:
+                # 그 날짜는 calendar_krx·daily_* 에 아무것도 쓰지 않았다 (날짜 단위 트랜잭션) - 다음 실행이 재시도한다
+                loader.result.skipped_dates[exc.outcome] += 1
+                loader.result.skipped_list.append((plan.date, exc.outcome))
+                consecutive += 1
+                log.warning("%s 건너뜀(%s: %s) - 연속 %d/%d", plan.date, exc.outcome, exc.service, consecutive,
+                            st.max_consecutive_skips)
+                if consecutive >= st.max_consecutive_skips:
+                    loader.result.abort_reason = (f"연속 실패 {consecutive}회, KRX 장애 추정"
+                                                  f" (마지막: {plan.date} {exc.service} {exc.outcome})")
+                    log.error("KRX 적재 중단: %s", loader.result.abort_reason)
+                    break
+                continue
+            consecutive = 0
     except BudgetReached as exc:
         loader.result.budget_reached = True
         log.info("%s", exc)
@@ -349,6 +389,10 @@ def format_summary(result: LoadResult, *, label: str = "krx") -> str:
     mm, ss = divmod(int(result.elapsed_sec), 60)
     rows = " ".join(f"{s}={result.rows.get(s, 0)}" for s in (SERVICE_STOCK_KOSPI, SERVICE_STOCK_KOSDAQ, SERVICE_ETF, SERVICE_INDEX,
                                                             SERVICE_ISSUE_KOSPI, SERVICE_ISSUE_KOSDAQ))
+    skipped = sum(result.skipped_dates.values())
+    skipped_text = f"건너뜀 {skipped}일"
+    if skipped:
+        skipped_text += "(" + ", ".join(f"{k}×{v}" for k, v in sorted(result.skipped_dates.items())) + ")"
     tail = ""
     if result.budget_reached:
         tail += " / 예산 도달(다음 실행에서 재개)"
@@ -357,19 +401,32 @@ def format_summary(result: LoadResult, *, label: str = "krx") -> str:
     return (
         f"[{label}] {result.started_at.date().isoformat()} 적재 종료: 대상 {result.planned}일 중 {result.processed}일 처리"
         f" (거래일 {result.trading_days} / 휴장일 {result.holidays} / pending {result.pending}) / 행 {rows}"
-        f" / ETF 빈 행 {result.skipped_etf_blank} / parse_error {result.parse_errors}"
+        f" / ETF 빈 행 {result.skipped_etf_blank} / parse_error {result.parse_errors} / {skipped_text}"
         f" / 호출 {result.calls} (오늘 {result.calls_today}/{result.budget}) / 소요 {mm}분 {ss}초{tail}"
     )
 
 
 def alert_messages(result: LoadResult, *, label: str = "krx") -> list[str]:
-    """사이렌 조건: auth_error·quota·parse_error 1건 이상."""
-    bad = {k: v for k, v in result.outcomes.items() if k in (store.OUTCOME_AUTH, store.OUTCOME_QUOTA, store.OUTCOME_PARSE) and v > 0}
-    if not bad:
+    """#alerts 사이렌 문장 (보완 42) - 아래 중 하나라도 참이면 한 줄, 아니면 빈 리스트.
+
+    중단 사유가 있음(인증·한도·연속 실패), 건너뛴 날짜 ≥ 1, 행 parse_error ≥ 1, 장부 outcome 에 인증·한도 ≥ 1.
+    예산 도달만으로는 보내지 않는다. 정상 완료라도 건너뜀·parse_error 가 있으면 보낸다.
+    """
+    items: list[str] = []
+    skipped = sum(result.skipped_dates.values())
+    if skipped:
+        detail = ", ".join(f"{k}×{v}" for k, v in sorted(result.skipped_dates.items()))
+        items.append(f"건너뜀 {skipped}일({detail})")
+    if result.parse_errors:
+        items.append(f"parse_error {result.parse_errors}")
+    bad = {k: v for k, v in result.outcomes.items() if k in (store.OUTCOME_AUTH, store.OUTCOME_QUOTA) and v > 0}
+    if bad:
+        items.append(", ".join(f"{k}×{v}" for k, v in sorted(bad.items())))
+    if result.abort_reason:
+        items.append(f"중단: {result.abort_reason}")
+    if not items:
         return []
-    detail = ", ".join(f"{k}×{v}" for k, v in sorted(bad.items()))
-    return [f"[{label}] 경고: {result.started_at.date().isoformat()} 적재 {detail}"
-            f"{' / 중단: ' + result.abort_reason if result.abort_reason else ''}"]
+    return [f"[{label}] 경고: {result.started_at.date().isoformat()} 적재 " + " / ".join(items)]
 
 
 def format_dry_run(plans: list[DatePlan], *, calls_today: int, budget: int, since: str, until: str, order: str) -> str:
@@ -430,15 +487,17 @@ def run_load(
     notify = notify and bool(require(cfg, "collector", "notify", "discord"))
     with file_lock(cfg, "krx", label="krx", wait=wait):
         krx_client = client or KrxClient(cfg)
-        conn = connect(db_path)
+        conn = None
         try:
+            conn = connect(db_path)         # 스키마 불일치(SchemaMismatchError)도 아래 사이렌 경로를 탄다
             result = load(cfg, krx_client, conn, now=now, since=since_iso, until=until_iso, budget=budget)
         except Exception as exc:
             if notify:
                 _notify(cfg, discord.PURPOSE_ALERTS, f"[krx] 중단: {exc.__class__.__name__}: {exc}")
             raise
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
     message = format_summary(result)
     log.info(message)
     emit(message)

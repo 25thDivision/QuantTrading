@@ -207,21 +207,27 @@ def test_budget_stops_and_next_run_resumes(cfg, conn):
     assert [d for s, d in c3.calls if s == "issue_kospi"] == []                        # 10월 스냅샷(10-05)이 이미 있다
 
 
-def test_transient_error_rolls_back_date_and_aborts(cfg, conn):
+def test_transient_error_rolls_back_date_and_skips(cfg, conn):
+    """보완 41: 일시 오류는 그 날짜만 롤백하고 건너뛴 뒤 계속한다 (더 이상 실행 중단이 아니다)."""
     data: dict = {}
     trading_day(data, "2026-10-05"); trading_day(data, "2026-10-02")
     data[("etf", "2026-10-05")] = KrxTransientError("KRX etf 기준일=2026-10-05 재시도 2회 후에도 실패", http_status=503, elapsed_sec=1.0)
     r, c = run(cfg, conn, data, since="2026-10-02")
-    assert r.abort_reason and "KrxTransientError" in r.abort_reason and r.processed == 0
-    assert [s for s, d in c.calls if d == "2026-10-05"] == ["stock_kospi", "stock_kosdaq", "etf"] and len(c.calls) == 3
+    assert r.abort_reason is None and r.processed == 1 and r.trading_days == 1
+    assert dict(r.skipped_dates) == {"transient": 1} and r.skipped_list == [("2026-10-05", "transient")]
+    assert [s for s, d in c.calls if d == "2026-10-05"] == ["stock_kospi", "stock_kosdaq", "etf"]
     assert store.calendar_status(conn, "2026-10-05") is None
-    assert conn.execute("SELECT COUNT(*) FROM daily_stock").fetchone()[0] == 0        # 날짜 단위 롤백
-    assert dict(r.outcomes) == {"ok": 2, "transient": 1}
-    assert alert_messages(r) == []                                                    # transient 는 사이렌 조건 아님
-    assert "중단: stock" not in format_summary(r) and "중단:" in format_summary(r)
+    assert conn.execute("SELECT COUNT(*) FROM daily_stock WHERE trade_date='2026-10-05'").fetchone()[0] == 0   # 날짜 단위 롤백
+    assert conn.execute("SELECT outcome FROM krx_call_log WHERE bas_dd='2026-10-05' AND service='etf'").fetchone()[0] == "transient"
+    assert store.calendar_status(conn, "2026-10-02") == 1                              # 다음 날짜는 계속 적재
+    assert dict(r.outcomes) == {"ok": 8, "transient": 1}
+    assert len(alert_messages(r)) == 1 and "건너뜀 1일" in alert_messages(r)[0]          # 보완 42: 건너뜀도 사이렌
+    summary = format_summary(r)
+    assert "건너뜀 1일(transient×1)" in summary and "중단:" not in summary
     r2, c2 = run(cfg, conn, {k: v for k, v in data.items() if not isinstance(v, Exception)} | {("etf", "2026-10-05"): fixture_rows("etf", "2026-10-05")},
                  since="2026-10-02", now=NOW + timedelta(minutes=1))      # 다음 실행은 다른 초에 떨어진다 (같은 초 재실행은 기본키 충돌)
-    assert r2.trading_days == 2                                                       # 다음 실행이 같은 날짜부터 재개
+    assert r2.trading_days == 1 and [d for s, d in c2.calls][0] == "2026-10-05"       # 건너뛴 날짜부터 재개
+    assert store.calendar_status(conn, "2026-10-05") == 1
 
 
 def test_auth_error_aborts_with_siren(cfg, conn):
@@ -241,7 +247,7 @@ def test_parse_error_rows_are_isolated(cfg, conn):
     assert conn.execute("SELECT COUNT(*) FROM daily_stock WHERE symbol='BADROW'").fetchone()[0] == 0
     row = conn.execute("SELECT outcome, rows, error_text FROM krx_call_log WHERE service='stock_kospi'").fetchone()
     assert row["outcome"] == "parse_error" and row["rows"] == 3 and "BADROW/TDD_CLSPRC" in row["error_text"]
-    assert "parse_error×1" in alert_messages(r)[0] and "parse_error 1" in format_summary(r)
+    assert "parse_error 1" in alert_messages(r)[0] and "parse_error 1" in format_summary(r)
 
 
 # ------------------------------------------------------------ 진입점·dry-run·알림
@@ -272,7 +278,7 @@ def test_run_load_sends_summary_and_siren(cfg, monkeypatch):
     data[("etf", "2026-10-05")] = fixture_rows("etf", "2026-10-05") + [bad]
     result = run_load(cfg, since="2026-10-05", now=NOW, client=StubKrx(cfg, data), emit=lambda s: None)
     assert result.trading_days == 1 and result.parse_errors == 1
-    assert [p for p, _ in sent] == ["collector", "alerts"] and "parse_error×1" in sent[1][1]
+    assert [p for p, _ in sent] == ["collector", "alerts"] and "parse_error 1" in sent[1][1]
     assert Path(cfg["broker"]["lock"]["dir"], "krx.lock").exists()
 
 
