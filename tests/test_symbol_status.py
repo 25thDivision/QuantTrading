@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
-import json
+import io
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,6 +19,7 @@ from quant_trading.config import load_config
 REPO = Path(__file__).resolve().parent.parent
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 10, 6, 8, 50, tzinfo=KST)
+MEMBER = "kospi_code.mst"
 
 
 def make_line(code: str, name: str, group: str, *, pref: str = "0", halted: str = "N", managed: str = "N", liq: str = "N",
@@ -46,11 +48,19 @@ SAMPLE = b"\n".join([
 ]) + b"\n"
 
 
+def make_zip(member_bytes: bytes, member: str = MEMBER) -> bytes:
+    """테스트용 zip 을 메모리에서 만든다 (실제 다운로드 응답 대체)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(member, member_bytes)
+    return buf.getvalue()
+
+
 @pytest.fixture
 def cfg(tmp_path):
     cfg = load_config()
     cfg["collector"]["db_path"] = str(tmp_path / "test.sqlite3")
-    cfg["collector"]["symbol_source"]["cache_path"] = str(tmp_path / "kospi_code.mst")
+    cfg["collector"]["symbol_master_dir"] = str(tmp_path / "master")
     cfg["broker"]["lock"]["dir"] = str(tmp_path / "locks")
     return cfg
 
@@ -63,12 +73,12 @@ def conn(cfg):
 
 
 def fake_download(url, member, timeout):
-    return SAMPLE, "2026-10-06T08:45:00+09:00"
+    return make_zip(SAMPLE), "2026-10-06T08:45:00+09:00"
 
 
 def test_snapshot_maps_flags_for_all_groups(conn):
     records = parse_master(SAMPLE)
-    assert upsert_snapshot(conn, records, "2026-10-06", KIND_PRE_OPEN, file_mtime="2026-10-06T08:45:00+09:00", fetched_at="t") == 8
+    assert upsert_snapshot(conn, records, "2026-10-06", KIND_PRE_OPEN) == 8
     rows = {r["symbol"]: dict(r) for r in conn.execute("SELECT * FROM symbol_status_daily")}
     assert {r["security_group"] for r in rows.values()} == {"ST", "EF", "EN", "RT"}       # 전 그룹
     bad = rows["000001"]
@@ -79,22 +89,22 @@ def test_snapshot_maps_flags_for_all_groups(conn):
     assert (ok["halted"], ok["managed"], ok["alarm_code"], ok["pref_kind"], ok["listed_shares"]) == (0, 0, "00", "0", 5969782550)
     assert rows["005935"]["pref_kind"] == "1" and rows["069500"]["listed_shares"] is None
     assert rows["0052T0"]["symbol"] == "0052T0" and rows["088260"]["halted"] == 1
-    raw = json.loads(ok["raw_fields"])
-    assert len(raw) == len(MASTER_FIELDS) and raw["stck_lstn_date"] == "20200101"
-    assert ok["file_mtime"] == "2026-10-06T08:45:00+09:00" and ok["snapshot_kind"] == "pre_open"
+    assert ok["snapshot_kind"] == "pre_open"
+    # 보완 46: 원문·파일 메타는 행이 아니라 헤더(zip 보관 폴더)로 옮겼다
+    assert {"raw_fields", "file_mtime", "fetched_at"}.isdisjoint(ok)
 
 
 def test_snapshot_upsert_same_day_same_kind_and_separate_kinds(conn):
     records = parse_master(SAMPLE)
-    upsert_snapshot(conn, records, "2026-10-06", KIND_PRE_OPEN, file_mtime=None, fetched_at="t1")
+    upsert_snapshot(conn, records, "2026-10-06", KIND_PRE_OPEN)
     changed = parse_master(SAMPLE.replace(make_line("005930", "삼성전자", "ST", shares="5969782550"), make_line("005930", "삼성전자", "ST", halted="Y", shares="5969782550")))
-    upsert_snapshot(conn, changed, "2026-10-06", KIND_PRE_OPEN, file_mtime=None, fetched_at="t2")
-    upsert_snapshot(conn, records, "2026-10-06", KIND_POST_CLOSE, file_mtime=None, fetched_at="t3")
+    upsert_snapshot(conn, changed, "2026-10-06", KIND_PRE_OPEN)
+    upsert_snapshot(conn, records, "2026-10-06", KIND_POST_CLOSE)
     assert conn.execute("SELECT COUNT(*) FROM symbol_status_daily").fetchone()[0] == 16
-    got = conn.execute("SELECT snapshot_kind, halted, fetched_at FROM symbol_status_daily WHERE symbol='005930' ORDER BY snapshot_kind").fetchall()
-    assert [(g["snapshot_kind"], g["halted"], g["fetched_at"]) for g in got] == [("post_close", 0, "t3"), ("pre_open", 1, "t2")]
+    got = conn.execute("SELECT snapshot_kind, halted FROM symbol_status_daily WHERE symbol='005930' ORDER BY snapshot_kind").fetchall()
+    assert [(g["snapshot_kind"], g["halted"]) for g in got] == [("post_close", 0), ("pre_open", 1)]
     with pytest.raises(ValueError):
-        upsert_snapshot(conn, records, "2026-10-06", "midday", file_mtime=None, fetched_at="t")
+        upsert_snapshot(conn, records, "2026-10-06", "midday")
 
 
 def test_summary_line():
@@ -113,25 +123,30 @@ def test_run_snapshot_downloads_and_notifies(cfg, monkeypatch):
     assert summary.total == 8 and summary.source == "download" and summary.snapshot_date == "2026-10-06"
     assert [p for p, _ in sent] == ["collector"]
     c = connect(cfg["collector"]["db_path"])
-    assert c.execute("SELECT COUNT(*), MIN(file_mtime) FROM symbol_status_daily WHERE snapshot_kind='pre_open'").fetchone()[:] == (8, "2026-10-06T08:45:00+09:00")
+    assert c.execute("SELECT COUNT(*) FROM symbol_status_daily WHERE snapshot_kind='pre_open'").fetchone()[0] == 8
+    header = c.execute("SELECT * FROM symbol_status_snapshot WHERE snapshot_kind='pre_open'").fetchone()
     c.close()
-    assert Path(cfg["collector"]["symbol_source"]["cache_path"]).exists()                 # 캐시도 갱신
+    assert header["file_mtime"] == "2026-10-06T08:45:00+09:00" and header["is_fallback"] == 0
+    assert Path(header["file_path"]).name == "2026-10-06_pre_open.zip"        # zip 원본 보관 (보완 46)
 
 
-def test_run_snapshot_cache_fallback_marks_warning(cfg, monkeypatch):
-    Path(cfg["collector"]["symbol_source"]["cache_path"]).write_bytes(SAMPLE)
+def test_run_snapshot_cache_fallback_marks_warning(cfg, monkeypatch, tmp_path):
+    master = tmp_path / "master"
+    master.mkdir()
+    (master / "2026-10-06_pre_open.zip").write_bytes(make_zip(SAMPLE))
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr("quant_trading.notify.discord.send", lambda message, cfg_, *, purpose, session=None: sent.append((purpose, message)) or True)
 
     def failing(url, member, timeout):
         raise OSError("dns")
-    summary = run_snapshot(cfg, KIND_PRE_OPEN, now=NOW, downloader=failing, snapshot_date="2026-10-07")
-    assert summary.source == "cache" and "직전 캐시 사용" in summary.message()
+    summary = run_snapshot(cfg, KIND_PRE_OPEN, now=datetime(2026, 10, 7, 8, 50, tzinfo=KST), downloader=failing)
+    assert summary.source == "cache" and "직전 캐시 사용" in summary.message() and summary.is_fallback is True
     assert [p for p, _ in sent] == ["collector", "alerts"]
     c = connect(cfg["collector"]["db_path"])
-    row = c.execute("SELECT file_mtime FROM symbol_status_daily WHERE snapshot_date='2026-10-07' LIMIT 1").fetchone()
-    assert row["file_mtime"] and row["file_mtime"].endswith("+09:00")                       # 캐시 파일 mtime
+    header = c.execute("SELECT * FROM symbol_status_snapshot WHERE snapshot_date='2026-10-07'").fetchone()
     c.close()
+    assert header["is_fallback"] == 1 and header["file_mtime"] is None
+    assert Path(header["file_path"]) == master / "2026-10-06_pre_open.zip"
 
 
 # ------------------------------------------------------------ 스윕 연동
@@ -140,14 +155,15 @@ def wire(cfg, monkeypatch, *, warning=None):
     from quant_trading.collector.symbols import SymbolLoadResult
     records = parse_master(SAMPLE)
     loaded = SymbolLoadResult(symbols=["005930"], source="cache" if warning else "download", warning=warning, counts={},
-                              cache_path=Path("x"), records=records, file_mtime="2026-10-06T18:55:00+09:00")
+                              records=records, file_mtime="2026-10-06T18:55:00+09:00", file_sha256="a" * 64,
+                              rows_by_group={"ST": 4, "EF": 2, "EN": 1, "RT": 1})
     rows = [{"stck_bsop_date": "20261006", "stck_cntg_hour": f"{h:02d}{m:02d}00", "stck_prpr": "1000", "stck_oprc": "1000",
              "stck_hgpr": "1000", "stck_lwpr": "1000", "cntg_vol": "1", "acml_tr_pbmn": "1000"} for h in (9,) for m in range(5, -1, -1)]
     client = StubQuoteClient({"005930": rows})
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(runner.discord, "send", lambda message, cfg_, *, purpose, session=None: sent.append((purpose, message)) or True)
     monkeypatch.setattr(runner, "KisQuoteClient", lambda cfg_, env, limiter: client)
-    monkeypatch.setattr(runner, "load_symbols", lambda cfg_: loaded)
+    monkeypatch.setattr(runner, "load_symbols", lambda cfg_, **kwargs: loaded)
     return client, sent
 
 
@@ -157,8 +173,10 @@ def test_sweep_writes_post_close_snapshot(cfg, monkeypatch):
     runner.run_sweep(cfg, env="paper", now=now)
     c = connect(cfg["collector"]["db_path"])
     got = c.execute("SELECT snapshot_kind, COUNT(*), MIN(snapshot_date) FROM symbol_status_daily GROUP BY snapshot_kind").fetchall()
-    assert [tuple(g) for g in got] == [("post_close", 8, datetime.now(KST).date().isoformat())]
+    header = c.execute("SELECT snapshot_kind, snapshot_date, rows FROM symbol_status_snapshot").fetchall()
     c.close()
+    assert [tuple(g) for g in got] == [("post_close", 8, datetime.now(KST).date().isoformat())]
+    assert [tuple(h) for h in header] == [("post_close", datetime.now(KST).date().isoformat(), 8)]
 
 
 def test_backfill_and_symbols_modes_do_not_snapshot(cfg, monkeypatch):
@@ -169,8 +187,10 @@ def test_backfill_and_symbols_modes_do_not_snapshot(cfg, monkeypatch):
     except Exception:  # noqa: BLE001 - 소급 거부·스텁 한계는 이 테스트의 관심이 아니다
         pass
     c = connect(cfg["collector"]["db_path"])
-    assert c.execute("SELECT COUNT(*) FROM symbol_status_daily").fetchone()[0] == 0
+    daily = c.execute("SELECT COUNT(*) FROM symbol_status_daily").fetchone()[0]
+    headers = c.execute("SELECT COUNT(*) FROM symbol_status_snapshot").fetchone()[0]
     c.close()
+    assert (daily, headers) == (0, 0)
 
 
 def test_snapshot_failure_does_not_stop_sweep(cfg, monkeypatch):
@@ -187,12 +207,13 @@ def test_entry_point_exit_codes(cfg, monkeypatch, capsys):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "load_config", lambda path=None: cfg)
-    monkeypatch.setattr("quant_trading.collector.symbol_status.load_symbols", lambda cfg_, downloader=None: load_symbols(cfg_, downloader=fake_download))
+    monkeypatch.setattr("quant_trading.collector.symbol_status.load_symbols",
+                        lambda cfg_, *, downloader=None, archive=None: load_symbols(cfg_, downloader=fake_download, archive=archive))
     monkeypatch.setattr("quant_trading.notify.discord.send", lambda *a, **k: True)
     assert module.main(["--kind", "pre_open", "--date", "20261006", "--no-notify"]) == 0
     assert "[symbol_status] 2026-10-06 pre_open 스냅샷(download): 종목 8" in capsys.readouterr().out
     assert module.main(["--kind", "post_close", "--date", "2026/10/06"]) == 2
     with pytest.raises(SystemExit):
         module.main(["--kind", "midday"])
-    monkeypatch.setattr("quant_trading.collector.symbol_status.load_symbols", lambda cfg_, downloader=None: (_ for _ in ()).throw(__import__("quant_trading.collector.symbols", fromlist=["SymbolSourceError"]).SymbolSourceError("캐시도 없음")))
+    monkeypatch.setattr("quant_trading.collector.symbol_status.load_symbols", lambda cfg_, *, downloader=None, archive=None: (_ for _ in ()).throw(__import__("quant_trading.collector.symbols", fromlist=["SymbolSourceError"]).SymbolSourceError("보관 zip 도 없음")))
     assert module.main(["--kind", "pre_open", "--no-notify"]) == 2

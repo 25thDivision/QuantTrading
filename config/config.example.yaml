@@ -60,7 +60,6 @@ collector:          # 분봉 스윕 수집기 (결정 11) - 마감 후 REST 일�
     provider: kis_master
     url: https://new.real.download.dws.co.kr/common/master/kospi_code.mst.zip
     member: kospi_code.mst      # zip 안의 파일명
-    cache_path: data/kospi_code.mst   # 스윕 시작 시 다운로드해 갱신. 실패 시 직전 캐시 사용 + 경고
     timeout_sec: 30
     groups: [ST, EF]            # 증권그룹구분코드: ST 주권, EF ETF. ETN(EN)·수익증권(BC)·리츠(RT) 등 제외
     common_only: false          # false: 주권(ST) 전체(보통주 + 우선주) 수집. true 면 우선주구분코드 0(보통주)만
@@ -68,6 +67,7 @@ collector:          # 분봉 스윕 수집기 (결정 11) - 마감 후 REST 일�
   symbol_status:                # 종목정보파일 지정내역 플래그 스냅샷 2회 (결정 12 symbol_status_daily, 파일 전 그룹)
     pre_open_time: "08:50"      # k12 타이머 시각 (08:45 판). deploy/systemd/symbol-status-preopen.timer 의 OnCalendar 와 일치시킬 것
     post_close: with_sweep      # 장 후 판은 20:30 스윕이 내려받은 파일로 적재 (별도 다운로드 없음)
+  symbol_master_dir: data/symbol_master   # 종목정보파일 zip 원본 보관 폴더(<날짜>_<종류>.zip) = 다운로드 실패 시 캐시 폴백의 유일한 원천 (결정 12 보완 46). 없으면 생성
 
 broker:
   kis:

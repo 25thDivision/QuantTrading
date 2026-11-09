@@ -12,11 +12,11 @@
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import logging
 import os
 import zipfile
-from datetime import datetime
 from email.utils import parsedate_to_datetime
 from collections import Counter
 from dataclasses import dataclass, field
@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from quant_trading.config import ConfigError, require, resolve_path
+from quant_trading.config import REPO_ROOT, ConfigError, require, resolve_path
 
 log = logging.getLogger(__name__)
 
@@ -58,6 +58,7 @@ assert sum(w for _, w in MASTER_FIELDS) == PART2_LEN
 GROUP_STOCK = "ST"      # 주권
 GROUP_ETF = "EF"        # ETF
 PREF_COMMON = "0"       # 우선주구분코드 0: 해당없음(보통주)
+PARSER_VERSION = "1"    # 파싱 규칙 버전 (symbol_status_snapshot 헤더에 기록 - 보완 43)
 
 
 class SymbolSourceError(RuntimeError):
@@ -91,11 +92,15 @@ class MasterRecord:
 class SymbolLoadResult:
     symbols: list[str]
     source: str                      # "download" | "cache"
-    warning: str | None              # 다운로드 실패 시 사유 (캐시 사용)
+    warning: str | None              # 다운로드 실패 시 사유 (보관 zip 폴백)
     counts: dict[str, int]           # 그룹별 파싱 건수 + common_stock/etf/selected
-    cache_path: Path
     records: list[MasterRecord] = field(default_factory=list)   # 파일 전 행 (전 그룹) - 지정내역 스냅샷용
-    file_mtime: str | None = None    # 다운로드 응답 Last-Modified(ISO) 또는 캐시 파일 mtime(ISO)
+    file_mtime: str | None = None    # 다운로드 응답 Last-Modified(ISO, Asia/Seoul). 폴백이면 None
+    file_sha256: str = ""            # 압축 해제한 mst 본문의 SHA-256 (소문자 hex) - 보완 43
+    file_path: str | None = None     # 보관 zip 의 저장소 상대 경로 (저장 안 했거나 실패 시 None)
+    is_fallback: bool = False        # 보관 폴더의 옛 zip 을 썼는가
+    save_error: str | None = None    # zip 원본 보관 실패 사유 (적재는 계속)
+    rows_by_group: dict[str, int] = field(default_factory=dict)   # 헤더에 남길 그룹별 건수
 
 
 # ------------------------------------------------------------------ parse
@@ -153,18 +158,32 @@ def summarize(records: list[MasterRecord], selected: list[str]) -> dict[str, int
 
 # --------------------------------------------------------------- download
 def download_master_with_meta(url: str, member: str, timeout: float) -> tuple[bytes, str | None]:
-    """(파일 바이트, 응답 Last-Modified 를 ISO(Asia/Seoul)로 - 없으면 None)."""
+    """(내려받은 zip 원본 바이트, 응답 Last-Modified 를 ISO(Asia/Seoul)로 - 없으면 None).
+
+    받은 바이트를 그대로 보관해야 하므로 압축은 풀지 않고, zip 안에 member 가 있는지만 확인한다 (보완 46).
+    """
     resp = requests.get(url, timeout=timeout)
     resp.raise_for_status()
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+    content = resp.content
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
         names = zf.namelist()
         if member not in names:
             raise SymbolSourceError(f"zip 안에 {member} 가 없습니다: {names}")
-        return zf.read(member), http_date_to_iso(resp.headers.get("Last-Modified"))
+    return content, http_date_to_iso(resp.headers.get("Last-Modified"))
+
+
+def extract_member(zip_bytes: bytes, member: str) -> bytes:
+    """zip 바이트에서 member 본문을 꺼낸다 (없으면 SymbolSourceError)."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        names = zf.namelist()
+        if member not in names:
+            raise SymbolSourceError(f"zip 안에 {member} 가 없습니다: {names}")
+        return zf.read(member)
 
 
 def download_master(url: str, member: str, timeout: float) -> bytes:
-    return download_master_with_meta(url, member, timeout)[0]
+    zip_bytes, _ = download_master_with_meta(url, member, timeout)
+    return extract_member(zip_bytes, member)
 
 
 def http_date_to_iso(value: str | None) -> str | None:
@@ -176,6 +195,15 @@ def http_date_to_iso(value: str | None) -> str | None:
         return None
 
 
+def repo_relative(path: Path) -> str:
+    """저장소 루트 아래면 상대 경로 문자열, 아니면 절대 경로 문자열 (테스트의 임시 폴더 등)."""
+    absolute = Path(os.path.abspath(path))
+    try:
+        return absolute.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(absolute)
+
+
 def _write_atomic(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -183,31 +211,63 @@ def _write_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float], bytes] | None = None) -> SymbolLoadResult:
-    """스윕 시작 시 종목정보파일 다운로드 → 파싱 → 캐시 저장. 실패 시 직전 캐시 사용 + 경고."""
+def latest_archive(master_dir: Path) -> Path | None:
+    """보관 폴더의 *.zip 중 파일명 정렬 마지막 (다운로드 실패 시 폴백 선택 규칙 - 보완 46)."""
+    if not master_dir.is_dir():
+        return None
+    archives = sorted(master_dir.glob("*.zip"), key=lambda p: p.name)
+    return archives[-1] if archives else None
+
+
+def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float], bytes] | None = None,
+                 archive: tuple[str, str] | None = None) -> SymbolLoadResult:
+    """스윕 시작 시 종목정보파일 다운로드 → 파싱 → zip 원본 보관. 실패 시 보관 폴더의 최신 zip 폴백 + 경고.
+
+    archive=(날짜, 종류) 를 주면 받은 zip 원본을 symbol_master_dir/<날짜>_<종류>.zip 에 그대로 저장한다
+    (소급 모드 등 archive=None 이면 보관하지 않는다). 보관 실패는 적재를 막지 않고 save_error 로 남긴다.
+    """
     src = require(cfg, "collector", "symbol_source")
     if str(src.get("provider")) != "kis_master":
         raise ConfigError(f"지원하지 않는 symbol_source.provider: {src.get('provider')!r}")
-    cache_path = resolve_path(str(src["cache_path"]))
+    master_dir = resolve_path(str(require(cfg, "collector", "symbol_master_dir")))
+    member = str(src["member"])
     groups = [str(g) for g in src["groups"]]
     common_only = bool(src["common_only"])
     fetch = downloader or download_master_with_meta
     warning: str | None = None
     source = "download"
     file_mtime: str | None = None
+    file_path: str | None = None
+    save_error: str | None = None
+    is_fallback = False
     try:
-        fetched = fetch(str(src["url"]), str(src["member"]), float(src["timeout_sec"]))
-        data, file_mtime = fetched if isinstance(fetched, tuple) else (fetched, None)   # downloader 가 (bytes, mtime) 을 줄 수도 있다
-        records = parse_master(data)          # 파싱까지 성공해야 캐시를 덮어쓴다
-        _write_atomic(cache_path, data)
-    except Exception as exc:  # noqa: BLE001 - 다운로드·파싱 실패는 캐시로 대체
-        warning = f"종목정보파일 다운로드 실패, 직전 캐시 사용: {exc.__class__.__name__}: {exc}"
-        if not cache_path.exists():
-            raise SymbolSourceError(f"{warning} - 캐시({cache_path})도 없음") from exc
+        fetched = fetch(str(src["url"]), member, float(src["timeout_sec"]))
+        zip_bytes, file_mtime = fetched if isinstance(fetched, tuple) else (fetched, None)   # downloader 가 zip 바이트만 줄 수도 있다
+        data = extract_member(zip_bytes, member)
+        records = parse_master(data)          # 파싱까지 성공해야 보관한다
+    except Exception as exc:  # noqa: BLE001 - 다운로드·파싱 실패는 보관 zip 폴백으로 대체
+        fallback = latest_archive(master_dir)
+        if fallback is None:
+            raise SymbolSourceError(
+                f"종목정보파일 다운로드 실패: {exc.__class__.__name__}: {exc} - 보관 zip 도 없음({master_dir})") from exc
+        warning = f"종목정보파일 다운로드 실패, 직전 캐시 사용({fallback.name}): {exc.__class__.__name__}: {exc}"
         log.warning(warning)
-        records = parse_master(cache_path.read_bytes())
+        data = extract_member(fallback.read_bytes(), member)
+        records = parse_master(data)
         source = "cache"
-        file_mtime = datetime.fromtimestamp(cache_path.stat().st_mtime, ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+        is_fallback = True
+        file_mtime = None
+        file_path = repo_relative(fallback)
+    else:
+        if archive is not None:
+            snapshot_date, kind = archive
+            target = master_dir / f"{snapshot_date}_{kind}.zip"
+            try:
+                _write_atomic(target, zip_bytes)      # 받은 바이트 그대로 (재압축 없음)
+                file_path = repo_relative(target)
+            except OSError as exc:  # noqa: BLE001 - 보관 실패가 스냅샷 적재를 막지 않는다
+                save_error = f"원본 보관 실패: {exc.__class__.__name__}: {exc}"
+                log.warning(save_error)
     symbols = select_symbols(records, groups, common_only)
     counts = summarize(records, symbols)
     if not symbols:
@@ -220,8 +280,10 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
         source, len(symbols), counts["selected_common_stock"], counts["selected_preferred_stock"], counts["selected_etf"],
         groups, common_only, len(records), counts.get("ST", 0), counts.get("EF", 0), counts.get("EN", 0),
     )
-    return SymbolLoadResult(symbols=symbols, source=source, warning=warning, counts=counts, cache_path=cache_path,
-                            records=records, file_mtime=file_mtime)
+    return SymbolLoadResult(symbols=symbols, source=source, warning=warning, counts=counts, records=records,
+                            file_mtime=file_mtime, file_sha256=hashlib.sha256(data).hexdigest(), file_path=file_path,
+                            is_fallback=is_fallback, save_error=save_error,
+                            rows_by_group=dict(Counter(r.group for r in records)))
 
 
 def describe(result: SymbolLoadResult) -> str:

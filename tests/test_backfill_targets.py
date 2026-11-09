@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -119,10 +118,10 @@ def wired(cfg, conn, monkeypatch):
     seed_ledger(conn)
     client = make_client()
     sent: list[tuple[str, str]] = []
-    loaded = SymbolLoadResult(symbols=list(FILE_SYMBOLS), source="download", warning=None, counts={}, cache_path=Path("x.mst"))
+    loaded = SymbolLoadResult(symbols=list(FILE_SYMBOLS), source="download", warning=None, counts={})
     monkeypatch.setattr(runner.discord, "send", lambda message, cfg_, *, purpose, session=None: sent.append((purpose, message)) or True)
     monkeypatch.setattr(runner, "KisQuoteClient", lambda cfg_, env, limiter: client)
-    monkeypatch.setattr(runner, "load_symbols", lambda cfg_: loaded)
+    monkeypatch.setattr(runner, "load_symbols", lambda cfg_, **kwargs: loaded)
     return sent
 
 

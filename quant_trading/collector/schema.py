@@ -1,12 +1,15 @@
-"""SQLite 스키마 - 분봉 수집 두 테이블(candles_1m, collector_log)과 종목정보파일 플래그 스냅샷(symbol_status_daily).
-KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
+"""SQLite 스키마 - 분봉 수집 두 테이블(candles_1m, collector_log)과 종목정보파일 플래그 스냅샷
+(symbol_status_daily·symbol_status_snapshot). KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
 
-설계 근거 (DECISIONS.md 결정 11, ARCHITECTURE.md 2절):
+설계 근거 (DECISIONS.md 결정 11·12, ARCHITECTURE.md 2절):
 - candles_1m: 원본가 불변 저장. (symbol, ts) 복합 PK 로 재실행 멱등(UPSERT). ts 는 API 분봉 라벨을
   그대로 옮긴 거래소 현지시각이며, session 은 config 세션 테이블에서 파생해 세션 구분을 바로 할 수 있게 한다.
   amount_cum 은 API 가 주는 당일 누적 거래대금 원본이다 (분 거래대금은 읽기 시점에 차분 - 원본 보존 원칙).
 - collector_log: 수집 완전성은 데이터 존재가 아니라 장부로 판정한다. (trade_date, symbol, kind) PK,
   상태(ok/partial/no_trade/error)·사유·행수·체결행수·페이지수·적재 구간·시각·run_id.
+- symbol_status_snapshot: 스냅샷 신선도 헤더(하루 2행). 파일 해시·mtime·행 수를 행마다 반복하지 않고 여기에 남겨
+  캐시 폴백과 "다운로드는 됐으나 공급자가 갱신하지 않음" 을 사후에 판정할 수 있게 한다 (보완 43).
+  원문은 행마다 두지 않고 data/symbol_master/ 의 zip 으로 보관한다 (보완 46).
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ class SchemaMismatchError(ConfigError):
     """DB 에 남아 있는 옛 형태 테이블의 컬럼 구성이 현재 정의와 다름 (마이그레이션 없음 - 결정 12 보완 공통 전제)."""
 
 
-SCHEMA_SQL = """
+SCHEMA_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS candles_1m (
     symbol       TEXT    NOT NULL,   -- 종목코드 6자리
     ts           TEXT    NOT NULL,   -- 'YYYY-MM-DD HH:MM' 거래소 현지시각, API 분봉 라벨(stck_cntg_hour) 그대로
@@ -37,7 +40,6 @@ CREATE TABLE IF NOT EXISTS candles_1m (
     collected_at TEXT    NOT NULL,   -- 적재 시각 ISO8601(시간대 포함). 재실행 시 갱신
     PRIMARY KEY (symbol, ts)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_candles_1m_date ON candles_1m (trade_date, symbol);
 
 CREATE TABLE IF NOT EXISTS collector_log (
     trade_date   TEXT    NOT NULL,
@@ -55,7 +57,6 @@ CREATE TABLE IF NOT EXISTS collector_log (
     run_id       TEXT    NOT NULL,   -- 스윕 실행 식별자 (집계·알림 단위)
     PRIMARY KEY (trade_date, symbol, kind)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_collector_log_run ON collector_log (run_id);
 
 CREATE TABLE IF NOT EXISTS symbol_status_daily (
     snapshot_date         TEXT    NOT NULL,   -- 'YYYY-MM-DD' (다운로드한 날, 한국 날짜)
@@ -75,12 +76,32 @@ CREATE TABLE IF NOT EXISTS symbol_status_daily (
     low_liquidity         INTEGER NOT NULL,   -- low_current_yn 저유동성
     pref_kind             TEXT    NOT NULL,   -- prst_cls_code 0 보통주 / 1 구형우선주 / 2 신형우선주 / 9 종류주권(헤더 미기재)
     listed_shares         INTEGER,            -- lstn_stcn (천 단위 여부는 헤더 주석 "(천)" - 원문 숫자 그대로)
-    raw_fields            TEXT    NOT NULL,   -- 파일 뒷부분 고정폭 필드 70개 원문 JSON (추후 컬럼 승격 대비)
-    file_mtime            TEXT,               -- 다운로드 응답의 Last-Modified (ISO, Asia/Seoul). 캐시 사용 시 캐시 파일 mtime
-    fetched_at            TEXT    NOT NULL,
     PRIMARY KEY (snapshot_date, snapshot_kind, symbol)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS symbol_status_snapshot (
+    snapshot_date  TEXT    NOT NULL,   -- 'YYYY-MM-DD' (다운로드한 날, 한국 날짜)
+    snapshot_kind  TEXT    NOT NULL,   -- pre_open | post_close
+    is_fallback    INTEGER NOT NULL,   -- 0 다운로드 / 1 보관 폴더 최신 zip 폴백
+    file_sha256    TEXT    NOT NULL,   -- 압축 해제한 mst 본문 SHA-256 (소문자 hex) - 캐시 폴백·미갱신 판정 근거
+    file_mtime     TEXT,               -- HTTP Last-Modified (ISO Asia/Seoul), 없거나 폴백이면 NULL
+    file_path      TEXT,               -- 보관 zip 의 저장소 상대 경로, 저장 실패 시 NULL
+    rows           INTEGER NOT NULL,   -- 파싱 행 수
+    rows_by_group  TEXT    NOT NULL,   -- 그룹별 건수 JSON
+    parser_version TEXT    NOT NULL,   -- symbols.PARSER_VERSION
+    fetched_at     TEXT    NOT NULL,
+    run_id         TEXT    NOT NULL,
+    PRIMARY KEY (snapshot_date, snapshot_kind)
+) WITHOUT ROWID;
 """
+
+# 인덱스는 옛 형태 테이블 검사(check_schema)를 통과한 뒤 만든다 - 옛 테이블에 없는 컬럼 인덱스로 먼저 실패하지 않게.
+SCHEMA_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS ix_candles_1m_date ON candles_1m (trade_date, symbol);
+CREATE INDEX IF NOT EXISTS ix_collector_log_run ON collector_log (run_id);
+"""
+
+SCHEMA_SQL = SCHEMA_TABLES_SQL + SCHEMA_INDEX_SQL
 
 
 def _table_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:
@@ -95,10 +116,10 @@ def _table_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:
 
 
 def defined_columns() -> dict[str, set[str]]:
-    """현재 코드의 정의(SCHEMA_SQL + KRX_TABLES_SQL)를 빈 메모리 DB 에 실행해 얻은 테이블별 컬럼 집합."""
+    """현재 코드의 정의(SCHEMA_TABLES_SQL + KRX_TABLES_SQL)를 빈 메모리 DB 에 실행해 얻은 테이블별 컬럼 집합."""
     mem = sqlite3.connect(":memory:")
     try:
-        mem.executescript(SCHEMA_SQL)
+        mem.executescript(SCHEMA_TABLES_SQL)
         mem.executescript(KRX_TABLES_SQL)
         return _table_columns(mem)
     finally:
@@ -138,10 +159,11 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
-        conn.executescript(SCHEMA_SQL)
+        conn.executescript(SCHEMA_TABLES_SQL)
         conn.executescript(KRX_TABLES_SQL)      # KRX 일 단위 테이블 (결정 12) - 같은 파일
         check_schema(conn)                      # 옛 형태 테이블이면 여기서 중단 (데이터 무변경)
-        conn.executescript(KRX_INDEX_SQL)       # 새 컬럼 인덱스는 검사 통과 뒤에 만든다
+        conn.executescript(SCHEMA_INDEX_SQL)    # 인덱스는 검사 통과 뒤에 만든다 (옛 테이블에 없는 컬럼 인덱스 실패 방지)
+        conn.executescript(KRX_INDEX_SQL)
     except BaseException:
         conn.close()
         raise

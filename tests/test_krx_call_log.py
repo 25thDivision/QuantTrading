@@ -301,3 +301,21 @@ def test_current_schema_connects_twice(tmp_path):
     for _ in range(2):
         conn = connect(path)
         conn.close()
+
+
+OLD_COLLECTOR_LOG = """
+CREATE TABLE collector_log (
+    trade_date TEXT NOT NULL, symbol TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+    PRIMARY KEY (trade_date, symbol, kind)
+) WITHOUT ROWID;
+"""
+
+
+def test_old_collector_log_without_index_column_is_detected_not_operational_error(tmp_path):
+    """SCHEMA_SQL 의 인덱스(run_id 등)도 검사 뒤에 만들어야 옛 테이블에서 OperationalError 대신 안내 메시지가 난다."""
+    path = tmp_path / "old_collector_log.sqlite3"
+    make_old_db(path, OLD_COLLECTOR_LOG)
+    with pytest.raises(SchemaMismatchError) as excinfo:
+        connect(path)
+    assert "collector_log" in str(excinfo.value) and "삭제 후 재실행" in str(excinfo.value)
+

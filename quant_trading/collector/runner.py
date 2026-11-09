@@ -1,12 +1,13 @@
 """스윕 실행 오케스트레이션 - 설정 → 어댑터 → 종목 목록 → 스윕 → 장부 집계 → 디스코드.
 
 알림 역할 분담: 일상 요약은 collector 채널(성공·실패 무관 매일), 경고는 alerts 채널에 별도 한 줄
-(장부상 error ≥ 1 또는 보호됨 비율·건수 기준 동시 충족 / 종목 목록 캐시 폴백 / 스윕 중단).
+(장부상 error ≥ 1 또는 보호됨 비율·건수 기준 동시 충족 / 종목 목록 캐시 폴백·zip 원본 보관 실패 / 스윕 중단).
 요약과 경고는 중복이 아니라 일지와 사이렌이다.
 """
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -44,7 +45,7 @@ def alert_messages(
     분봉 경고 조건: 장부상 error(run_id 기준) >= 1 또는 보호됨 비율·건수 기준 동시 충족. 처리 종목 수는 이번
     실행에서 실제 처리한 종목(건너뜀 제외). ledger_errors 를 주지 않으면 결과 집계의 error 수를 쓴다 (error 결과는
     장부에 기록되거나 보호됨으로 빠지므로 같은 값). 기준값(config alerts)을 주지 않으면 보호됨 조건은 보지 않는다.
-    그 밖의 조건: 종목 목록 캐시 폴백.
+    그 밖의 조건: 종목 목록 캐시 폴백, zip 원본 보관 실패.
     """
     alerts: list[str] = []
     errors = result.status_counts.get(STATUS_ERROR, 0) if ledger_errors is None else ledger_errors
@@ -63,6 +64,8 @@ def alert_messages(
         )
     if loaded is not None and loaded.warning:
         alerts.append(f"[collector {result.env}] 경고: {loaded.warning}")
+    if loaded is not None and loaded.save_error:
+        alerts.append(f"[collector {result.env}] 경고: {loaded.save_error}")
     return alerts
 
 
@@ -109,13 +112,17 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_on
         loaded: SymbolLoadResult | None = None
         snapshot_alert: str | None = None
         if symbols is None:
-            loaded = load_symbols(cfg)
+            # 당일 스윕만 받은 zip 원본을 보관한다 (소급 모드는 보관하지 않는다 - 보완 46)
+            snap_now = datetime.now(ZoneInfo(str(require(cfg, "markets", "kospi", "timezone"))))
+            archive = (snap_now.date().isoformat(), KIND_POST_CLOSE) if mode != "backfill" else None
+            loaded = load_symbols(cfg, archive=archive)
             symbols = loaded.symbols
-            if mode != "backfill":
+            if archive is not None:
                 # 당일 스윕은 내려받은 파일로 post_close 지정내역 스냅샷을 바로 적재한다 (별도 다운로드 없음, 결정 12)
-                snap_now = datetime.now(ZoneInfo(str(require(cfg, "markets", "kospi", "timezone"))))
+                snapshot_run_id = f"{snap_now:%Y%m%dT%H%M%S}-{os.getpid()}"
                 try:
-                    snapshot_from_loaded(conn, loaded, KIND_POST_CLOSE, snapshot_date=snap_now.date().isoformat(), now=snap_now)
+                    snapshot_from_loaded(conn, loaded, KIND_POST_CLOSE, snapshot_date=snap_now.date().isoformat(),
+                                         now=snap_now, run_id=snapshot_run_id)
                 except Exception as exc:  # noqa: BLE001 - 스냅샷 실패가 분봉 수집을 막지 않는다
                     snapshot_alert = f"[collector {env}] 경고: post_close 지정내역 스냅샷 실패 {exc.__class__.__name__}: {exc}"
                     log.exception("post_close 스냅샷 실패")

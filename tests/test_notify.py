@@ -1,8 +1,7 @@
-"""디스코드 채널 분리 테스트 - purpose 라우팅·미설정 생략·경고 조건 3종 발송 (스텁 세션, 네트워크 없음)."""
+"""디스코드 채널 분리 테스트 - purpose 라우팅·미설정 생략·경고 조건 4종 발송 (스텁 세션, 네트워크 없음)."""
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -83,9 +82,9 @@ def make_result(statuses: list[str]) -> SweepResult:
                        outcomes=[SymbolOutcome(symbol=f"{i:06d}", status=s) for i, s in enumerate(statuses)])
 
 
-def make_loaded(warning: str | None) -> SymbolLoadResult:
+def make_loaded(warning: str | None, *, save_error: str | None = None) -> SymbolLoadResult:
     return SymbolLoadResult(symbols=["005930"], source="cache" if warning else "download", warning=warning,
-                            counts={}, cache_path=Path("/tmp/x.mst"))
+                            counts={}, save_error=save_error)
 
 
 def test_alert_conditions_failed_symbols_and_cache_fallback():
@@ -99,13 +98,20 @@ def test_alert_conditions_failed_symbols_and_cache_fallback():
     assert runner.alert_messages(make_result(["error"]), None, {}) and len(runner.alert_messages(make_result(["error"]), None, {})) == 1
 
 
+def test_alert_condition_archive_save_failure():
+    save = runner.alert_messages(make_result(["ok"]), make_loaded(None, save_error="원본 보관 실패: OSError: read-only"), {})
+    assert len(save) == 1 and save[0].startswith("[collector paper] 경고: 원본 보관 실패")
+    both = runner.alert_messages(make_result(["ok"]), make_loaded("캐시 사용: x", save_error="원본 보관 실패: OSError: x"), {})
+    assert len(both) == 2
+
+
 def test_abort_path_sends_alert_then_reraises(cfg, webhooks, monkeypatch):
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(runner.discord, "send", lambda message, cfg_, *, purpose, session=None: sent.append((purpose, message)) or True)
     monkeypatch.setattr(runner, "KisQuoteClient", lambda cfg_, env, limiter: object())
     monkeypatch.setattr(runner, "connect", lambda path: _DummyConn())
 
-    def failing_load(cfg_):
+    def failing_load(cfg_, **kwargs):
         raise SymbolSourceError("캐시도 없음")
 
     monkeypatch.setattr(runner, "load_symbols", failing_load)
@@ -119,7 +125,7 @@ def test_abort_path_respects_no_notify(cfg, webhooks, monkeypatch):
     monkeypatch.setattr(runner.discord, "send", lambda message, cfg_, *, purpose, session=None: sent.append((purpose, message)) or True)
     monkeypatch.setattr(runner, "KisQuoteClient", lambda cfg_, env, limiter: object())
     monkeypatch.setattr(runner, "connect", lambda path: _DummyConn())
-    monkeypatch.setattr(runner, "load_symbols", lambda cfg_: (_ for _ in ()).throw(SymbolSourceError("x")))
+    monkeypatch.setattr(runner, "load_symbols", lambda cfg_, **kwargs: (_ for _ in ()).throw(SymbolSourceError("x")))
     with pytest.raises(SymbolSourceError):
         runner.run_sweep(cfg, env="paper", notify=False)
     assert sent == []

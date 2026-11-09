@@ -3,7 +3,8 @@
     uv run python scripts/snapshot_symbols.py --kind pre_open              # 08:50 타이머 (symbol-status-preopen.timer)
     uv run python scripts/snapshot_symbols.py --kind post_close --date 2026-10-06 --no-notify
 
-파일을 내려받아(실패 시 직전 캐시 사용, 요약에 명시) 전 그룹 종목의 플래그를 symbol_status_daily 에 UPSERT 한다.
+파일을 내려받아(실패 시 data/symbol_master/ 최신 zip 폴백, 요약에 명시) 전 그룹 종목의 플래그를 symbol_status_daily 에
+UPSERT 하고 헤더를 symbol_status_snapshot 에 남긴다. zip 원본을 data/symbol_master/<날짜>_<종류>.zip 에 보관한다.
 스윕(sweep_candles.py 당일 모드)은 자기 다운로드로 post_close 스냅샷을 적재하므로, 이 진입점은 pre_open 과 수동 재실행용이다.
 키 불필요(무자격증명 공개 파일). 종료코드: 0 정상 / 2 설정·인자 오류·파일 없음.
 """
