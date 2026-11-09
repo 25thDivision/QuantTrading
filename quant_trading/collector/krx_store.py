@@ -17,6 +17,8 @@ class CallLogEntry:
     called_at: str          # ISO 초 단위 (Asia/Seoul)
     service: str
     bas_dd: str             # ISO 기준일
+    attempt: int            # 그 호출의 HTTP 시도 순번 (1부터)
+    run_id: str             # 실행 식별자 (YYYYMMDDTHHMMSS-<pid>)
     http_status: int | None
     rows: int | None
     duration_sec: float | None
@@ -80,11 +82,13 @@ def calendar_between(conn: sqlite3.Connection, since: str, until: str) -> dict[s
 
 
 def insert_call_log(conn: sqlite3.Connection, entry: CallLogEntry) -> None:
+    """장부 1행 기록. 같은 기본키(같은 초·같은 시도 순번)가 이미 있으면 sqlite3.IntegrityError 로 드러낸다 (덮어쓰지 않음)."""
     with conn:
         conn.execute(
-            "INSERT OR REPLACE INTO krx_call_log (called_at, service, bas_dd, http_status, rows, duration_sec, outcome, error_text)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (entry.called_at, entry.service, entry.bas_dd, entry.http_status, entry.rows, entry.duration_sec, entry.outcome, entry.error_text),
+            "INSERT INTO krx_call_log (called_at, service, bas_dd, attempt, run_id, http_status, rows, duration_sec, outcome, error_text)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (entry.called_at, entry.service, entry.bas_dd, entry.attempt, entry.run_id, entry.http_status, entry.rows,
+             entry.duration_sec, entry.outcome, entry.error_text),
         )
 
 

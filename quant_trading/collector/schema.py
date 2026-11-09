@@ -13,8 +13,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from quant_trading.collector.krx_schema import KRX_SCHEMA_SQL
-from quant_trading.config import resolve_path
+from quant_trading.collector.krx_schema import KRX_INDEX_SQL, KRX_TABLES_SQL
+from quant_trading.config import ConfigError, resolve_path
+
+
+class SchemaMismatchError(ConfigError):
+    """DB 에 남아 있는 옛 형태 테이블의 컬럼 구성이 현재 정의와 다름 (마이그레이션 없음 - 결정 12 보완 공통 전제)."""
+
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS candles_1m (
@@ -56,7 +61,7 @@ CREATE TABLE IF NOT EXISTS symbol_status_daily (
     snapshot_date         TEXT    NOT NULL,   -- 'YYYY-MM-DD' (다운로드한 날, 한국 날짜)
     snapshot_kind         TEXT    NOT NULL,   -- pre_open (08:50 장 전 판) | post_close (20:30 스윕의 다운로드)
     symbol                TEXT    NOT NULL,   -- 단축코드 (영문자 포함 가능)
-    "group"               TEXT    NOT NULL,   -- 증권그룹구분코드 (ST/EF/EN/BC/RT/...) - 파일 전 그룹 기록
+    security_group        TEXT    NOT NULL,   -- 증권그룹구분코드 (ST/EF/EN/BC/RT/...) - 파일 전 그룹 기록 (issue_info 와 같은 이름)
     name                  TEXT,
     halted                INTEGER NOT NULL,   -- trht_yn 거래정지 (0/1)
     liquidation           INTEGER NOT NULL,   -- sltr_yn 정리매매
@@ -78,15 +83,66 @@ CREATE TABLE IF NOT EXISTS symbol_status_daily (
 """
 
 
+def _table_columns(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """테이블 이름 → 컬럼 이름 집합 (sqlite_ 내부 테이블 제외)."""
+    names = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+    result: dict[str, set[str]] = {}
+    for name in names:
+        quoted = '"' + name.replace('"', '""') + '"'
+        result[name] = {r[1] for r in conn.execute(f"PRAGMA table_info({quoted})")}
+    return result
+
+
+def defined_columns() -> dict[str, set[str]]:
+    """현재 코드의 정의(SCHEMA_SQL + KRX_TABLES_SQL)를 빈 메모리 DB 에 실행해 얻은 테이블별 컬럼 집합."""
+    mem = sqlite3.connect(":memory:")
+    try:
+        mem.executescript(SCHEMA_SQL)
+        mem.executescript(KRX_TABLES_SQL)
+        return _table_columns(mem)
+    finally:
+        mem.close()
+
+
+def check_schema(conn: sqlite3.Connection) -> None:
+    """실제 DB 의 같은 이름 테이블 컬럼 집합을 정의와 비교한다. 다르면 전부 모아 SchemaMismatchError.
+
+    우리 정의에 없는 테이블은 무시하고, 데이터는 건드리지 않는다 (조용한 ALTER 금지 - 결정 12 보완 공통 전제).
+    """
+    defined = defined_columns()
+    actual = _table_columns(conn)
+    problems: list[str] = []
+    for table in sorted(defined):
+        if table not in actual:
+            continue
+        have, want = sorted(actual[table]), sorted(defined[table])
+        if have != want:
+            problems.append(f"{table}: 기존 컬럼 {have} / 정의 컬럼 {want}")
+    if problems:
+        raise SchemaMismatchError(
+            "DB 스키마가 현재 정의와 다릅니다 (옛 형태 테이블):\n" + "\n".join(problems)
+            + "\n해당 테이블을 삭제 후 재실행하십시오 (마이그레이션 없음 - 결정 12 보완 공통 전제)")
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
-    """DB 를 열고(WAL 모드) 스키마를 보장한다. 부모 디렉터리는 생성한다."""
+    """DB 를 열고(WAL 모드) 스키마를 보장한다. 부모 디렉터리는 생성한다.
+
+    옛 형태 테이블이 남아 있으면 조용히 ALTER 하지 않고 SchemaMismatchError 로 중단한다 (결정 12 보완 공통 전제).
+    """
     path = resolve_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    conn.executescript(SCHEMA_SQL)
-    conn.executescript(KRX_SCHEMA_SQL)      # KRX 일 단위 테이블 (결정 12) - 같은 파일
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(SCHEMA_SQL)
+        conn.executescript(KRX_TABLES_SQL)      # KRX 일 단위 테이블 (결정 12) - 같은 파일
+        check_schema(conn)                      # 옛 형태 테이블이면 여기서 중단 (데이터 무변경)
+        conn.executescript(KRX_INDEX_SQL)       # 새 컬럼 인덱스는 검사 통과 뒤에 만든다
+    except BaseException:
+        conn.close()
+        raise
     return conn

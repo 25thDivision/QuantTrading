@@ -70,7 +70,7 @@ def test_snapshot_maps_flags_for_all_groups(conn):
     records = parse_master(SAMPLE)
     assert upsert_snapshot(conn, records, "2026-10-06", KIND_PRE_OPEN, file_mtime="2026-10-06T08:45:00+09:00", fetched_at="t") == 8
     rows = {r["symbol"]: dict(r) for r in conn.execute("SELECT * FROM symbol_status_daily")}
-    assert {r["group"] for r in rows.values()} == {"ST", "EF", "EN", "RT"}                 # 전 그룹
+    assert {r["security_group"] for r in rows.values()} == {"ST", "EF", "EN", "RT"}       # 전 그룹
     bad = rows["000001"]
     assert (bad["halted"], bad["liquidation"], bad["managed"], bad["alarm_code"], bad["alarm_risk_notice"], bad["short_over_code"]) == (1, 1, 1, "03", 1, "2")
     warn = rows["000002"]

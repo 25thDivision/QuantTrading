@@ -105,8 +105,8 @@ def test_plan_excludes_loaded_holidays_and_pending_today(cfg, conn):
                                                      amount=1, market_cap=1, listed_shares=1, change=0, change_rate=0.0, name="x", sector="")], stamp)
         store.set_calendar(conn, "2026-10-01", True, store.SOURCE_ROWS, stamp)           # 거래일인데 일봉 0행 → reload
         store.set_calendar(conn, "2026-09-30", False, store.SOURCE_EMPTY, stamp)         # 휴장일 확정 → 제외
-    store.insert_call_log(conn, store.CallLogEntry("2026-10-06T08:10:00+09:00", "stock_kospi", "2026-09-29", 200, 0, 0.1, "empty"))   # 오늘 empty → 제외
-    store.insert_call_log(conn, store.CallLogEntry("2026-10-05T08:10:00+09:00", "stock_kospi", "2026-09-28", 200, 0, 0.1, "empty"))   # 어제 empty → 재시도
+    store.insert_call_log(conn, store.CallLogEntry("2026-10-06T08:10:00+09:00", "stock_kospi", "2026-09-29", 1, "r1", 200, 0, 0.1, "empty"))   # 오늘 empty → 제외
+    store.insert_call_log(conn, store.CallLogEntry("2026-10-05T08:10:00+09:00", "stock_kospi", "2026-09-28", 1, "r1", 200, 0, 0.1, "empty"))   # 어제 empty → 재시도
     plans = plan_dates(conn, st, since="2026-09-28", until="2026-10-05", today="2026-10-06")
     assert [(p.date, p.status) for p in plans] == [("2026-10-05", "unknown"), ("2026-10-01", "reload"), ("2026-09-28", "unknown")]
     assert [p.issue_expected for p in plans] == [True, False, True]                      # 어제(10-05)·9월 첫 등장(09-28)은 True
@@ -220,7 +220,7 @@ def test_transient_error_rolls_back_date_and_aborts(cfg, conn):
     assert alert_messages(r) == []                                                    # transient 는 사이렌 조건 아님
     assert "중단: stock" not in format_summary(r) and "중단:" in format_summary(r)
     r2, c2 = run(cfg, conn, {k: v for k, v in data.items() if not isinstance(v, Exception)} | {("etf", "2026-10-05"): fixture_rows("etf", "2026-10-05")},
-                 since="2026-10-02")
+                 since="2026-10-02", now=NOW + timedelta(minutes=1))      # 다음 실행은 다른 초에 떨어진다 (같은 초 재실행은 기본키 충돌)
     assert r2.trading_days == 2                                                       # 다음 실행이 같은 날짜부터 재개
 
 

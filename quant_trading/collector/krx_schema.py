@@ -3,12 +3,16 @@
 - daily_stock: 주권 일봉, 코스피·코스닥 공유 (market 컬럼). daily_etf: ETF 일봉 + NAV·기초지수. daily_index: 코스피 계열 지수 일봉
   (지수 마스터 없음, 응답에 온 것을 그대로). issue_info: 종목기본정보 스냅샷 (as_of = 요청 basDd, 응답에 날짜가 없다).
 - calendar_krx: 거래일 캘린더. 과거는 코스피 일별매매 응답의 행 수(0 = 휴장일)로 판정. pending 은 여기 쓰지 않는다.
-- krx_call_log: KRX 호출 장부. 일일 예산 집계(한국 날짜별 건수)와 상태 주도 적재 재개의 근거. 분봉 장부 collector_log 와 분리.
+- krx_call_log: KRX 호출 장부. HTTP 요청 1건 = 장부 1행(재시도도 각각). 일일 예산 집계(한국 날짜별 건수)와
+  상태 주도 적재 재개의 근거. 분봉 장부 collector_log 와 분리.
 - 숫자 변환은 krx_rows.py: 빈 문자열만 NULL, "0"은 값. 종목코드는 어디서도 숫자로 바꾸지 않는다 (TEXT).
+
+테이블 정의(KRX_TABLES_SQL)와 인덱스(KRX_INDEX_SQL)를 나눠 둔다. schema.connect 는 테이블만 만든 뒤 옛 형태
+테이블 감사(check_schema)를 통과한 다음 인덱스를 만든다 (옛 테이블에 새 컬럼 인덱스를 걸려다 실패하는 것을 막는다).
 """
 from __future__ import annotations
 
-KRX_SCHEMA_SQL = """
+KRX_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS daily_stock (
     market        TEXT    NOT NULL,   -- 호출 서비스에서: kospi | kosdaq
     symbol        TEXT    NOT NULL,   -- ISU_CD 6자리 단축코드 (영문자 포함 가능)
@@ -28,7 +32,6 @@ CREATE TABLE IF NOT EXISTS daily_stock (
     fetched_at    TEXT    NOT NULL,
     PRIMARY KEY (market, symbol, trade_date)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_daily_stock_date ON daily_stock (trade_date, market);
 
 CREATE TABLE IF NOT EXISTS daily_etf (
     symbol            TEXT    NOT NULL,
@@ -53,7 +56,6 @@ CREATE TABLE IF NOT EXISTS daily_etf (
     fetched_at        TEXT    NOT NULL,
     PRIMARY KEY (symbol, trade_date)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_daily_etf_date ON daily_etf (trade_date);
 
 CREATE TABLE IF NOT EXISTS daily_index (
     trade_date  TEXT NOT NULL,
@@ -89,7 +91,6 @@ CREATE TABLE IF NOT EXISTS issue_info (
     fetched_at     TEXT NOT NULL,
     PRIMARY KEY (market, symbol, as_of)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_issue_info_asof ON issue_info (market, as_of);
 
 CREATE TABLE IF NOT EXISTS calendar_krx (
     date           TEXT    NOT NULL,  -- 'YYYY-MM-DD'
@@ -103,12 +104,24 @@ CREATE TABLE IF NOT EXISTS krx_call_log (
     called_at    TEXT    NOT NULL,    -- ISO 초 단위, Asia/Seoul (예산 집계는 이 값의 날짜 부분)
     service      TEXT    NOT NULL,    -- config krx.services 의 키
     bas_dd       TEXT    NOT NULL,    -- 기준일 'YYYY-MM-DD'
+    attempt      INTEGER NOT NULL,    -- 그 호출의 HTTP 시도 순번 (1부터). 같은 초의 재시도도 각각 1행
+    run_id       TEXT    NOT NULL,    -- 실행 식별자 (YYYYMMDDTHHMMSS-<pid>)
     http_status  INTEGER,             -- 응답을 못 받으면 NULL
     rows         INTEGER,             -- 응답 행 수
     duration_sec REAL,
     outcome      TEXT    NOT NULL,    -- ok / empty / auth_error / transient / quota / parse_error
     error_text   TEXT,
-    PRIMARY KEY (called_at, service, bas_dd)
+    PRIMARY KEY (called_at, service, bas_dd, attempt)
 ) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS ix_krx_call_log_date ON krx_call_log (service, bas_dd);
 """
+
+# (called_at, service, bas_dd) 는 기본키의 접두라 별도 인덱스를 만들지 않는다.
+KRX_INDEX_SQL = """
+CREATE INDEX IF NOT EXISTS ix_daily_stock_date ON daily_stock (trade_date, market);
+CREATE INDEX IF NOT EXISTS ix_daily_etf_date ON daily_etf (trade_date);
+CREATE INDEX IF NOT EXISTS ix_issue_info_asof ON issue_info (market, as_of);
+CREATE INDEX IF NOT EXISTS ix_krx_call_log_date ON krx_call_log (service, bas_dd);
+CREATE INDEX IF NOT EXISTS ix_krx_call_log_run ON krx_call_log (run_id);
+"""
+
+KRX_SCHEMA_SQL = KRX_TABLES_SQL + KRX_INDEX_SQL

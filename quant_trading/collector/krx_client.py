@@ -38,13 +38,26 @@ class KrxConfigError(ConfigError):
     """KRX 설정 문제 (인증키 미설정, 알 수 없는 서비스 키)."""
 
 
-class KrxError(RuntimeError):
-    """KRX 호출 실패 공통. http_status 는 응답을 받지 못했으면 None."""
+@dataclass(frozen=True)
+class KrxAttempt:
+    """HTTP 시도 1건의 기록 (장부 1행의 재료). error_text 는 실패 사유 - 성공 시도는 None."""
+    http_status: int | None
+    elapsed_sec: float
+    error_text: str | None
 
-    def __init__(self, message: str, *, http_status: int | None = None, elapsed_sec: float = 0.0) -> None:
+
+class KrxError(RuntimeError):
+    """KRX 호출 실패 공통. http_status 는 응답을 받지 못했으면 None.
+
+    attempts 는 이 호출에서 실제로 떨어진 HTTP 시도 순서(마지막 요소가 실패를 확정한 시도)다.
+    """
+
+    def __init__(self, message: str, *, http_status: int | None = None, elapsed_sec: float = 0.0,
+                 attempts: tuple[KrxAttempt, ...] = ()) -> None:
         super().__init__(message)
         self.http_status = http_status
         self.elapsed_sec = elapsed_sec
+        self.attempts = attempts
 
 
 class KrxResponseError(KrxError):
@@ -54,8 +67,9 @@ class KrxResponseError(KrxError):
 class KrxAuthError(KrxError):
     """HTTP 401 또는 본문에 Unauthorized. kind = key(인증키 문제) | api_call(서비스 미승인) | unknown."""
 
-    def __init__(self, message: str, *, kind: str, http_status: int | None = None, elapsed_sec: float = 0.0) -> None:
-        super().__init__(message, http_status=http_status, elapsed_sec=elapsed_sec)
+    def __init__(self, message: str, *, kind: str, http_status: int | None = None, elapsed_sec: float = 0.0,
+                 attempts: tuple[KrxAttempt, ...] = ()) -> None:
+        super().__init__(message, http_status=http_status, elapsed_sec=elapsed_sec, attempts=attempts)
         self.kind = kind
 
 
@@ -75,6 +89,7 @@ class KrxResponse:
     http_status: int
     elapsed_sec: float              # 마지막 시도의 HTTP 왕복 시간 (유량 대기·재시도 대기 제외)
     rows: list[dict[str, str]]      # OutBlock_1 원본 그대로
+    attempts: tuple[KrxAttempt, ...] = ()   # 이 호출의 HTTP 시도 순서 (마지막 요소가 성공한 시도)
 
 
 class KrxClient:
@@ -121,6 +136,7 @@ class KrxClient:
         headers = {AUTH_HEADER: self._auth_key}
         where = f"KRX {service} 기준일={iso}"
         last, last_status, elapsed = "unknown", None, 0.0
+        attempts: list[KrxAttempt] = []
         for attempt in range(self.retries + 1):
             if attempt:
                 self._sleep(self.retry_backoff)
@@ -131,6 +147,7 @@ class KrxClient:
             except requests.RequestException as exc:
                 elapsed = self._clock() - t0
                 last, last_status = f"network: {exc.__class__.__name__}: {self._scrub(str(exc))}", None
+                attempts.append(KrxAttempt(http_status=None, elapsed_sec=elapsed, error_text=last))
                 log.warning("%s 네트워크 오류 %s 소요=%.2fs (시도 %d/%d)", where, exc.__class__.__name__, elapsed,
                             attempt + 1, self.retries + 1)
                 continue
@@ -138,31 +155,36 @@ class KrxClient:
             status = resp.status_code
             rows = self._rows(resp) if status == 200 else None
             if rows is not None:
+                attempts.append(KrxAttempt(http_status=status, elapsed_sec=elapsed, error_text=None))
                 log.info("%s http=%d 행=%d 소요=%.2fs", where, status, len(rows), elapsed)
                 return KrxResponse(service=service, path=path, trade_date=iso, http_status=status,
-                                   elapsed_sec=elapsed, rows=rows)
+                                   elapsed_sec=elapsed, rows=rows, attempts=tuple(attempts))
             text = resp.text or ""
             head = self._scrub(text[:BODY_HEAD_LEN])
+            reason = f"http={status} body={head!r}"
+            attempts.append(KrxAttempt(http_status=status, elapsed_sec=elapsed, error_text=reason))
             if status >= 500:          # 재시도 대상: 5xx 만 시도 횟수를 표기한다
                 log.warning("%s http=%d 소요=%.2fs (시도 %d/%d)", where, status, elapsed, attempt + 1, self.retries + 1)
-                last, last_status = f"http={status} body={head!r}", status
+                last, last_status = reason, status
                 continue
             # 아래는 재시도하지 않는 오류 - 시도 횟수 없이 기록
+            done = tuple(attempts)
             if status == 429:
                 log.warning("%s http=%d 소요=%.2fs 한도 초과 - 재시도 없음", where, status, elapsed)
-                raise KrxQuotaError(f"{where} http={status} 한도 초과: {head!r}", http_status=status, elapsed_sec=elapsed)
+                raise KrxQuotaError(f"{where} http={status} 한도 초과: {head!r}", http_status=status, elapsed_sec=elapsed,
+                                    attempts=done)
             if status == 401 or AUTH_MARK in text:
                 log.warning("%s http=%d 소요=%.2fs 인증 오류 - 재시도 없음", where, status, elapsed)
-                raise self._auth_error(where, status, text, head, elapsed)
+                raise self._auth_error(where, status, text, head, elapsed, done)
             if any(mark in text.lower() for mark in QUOTA_MARKS):
                 log.warning("%s http=%d 소요=%.2fs 한도 초과로 보이는 응답 - 재시도 없음", where, status, elapsed)
                 raise KrxQuotaError(f"{where} http={status} 한도 초과로 보이는 응답: {head!r}",
-                                    http_status=status, elapsed_sec=elapsed)
+                                    http_status=status, elapsed_sec=elapsed, attempts=done)
             log.warning("%s http=%d 소요=%.2fs 응답 형식 오류 - 재시도 없음", where, status, elapsed)
             raise KrxResponseError(f"{where} http={status} {ROWS_KEY} 없음 또는 JSON 아님: {head!r}",
-                                   http_status=status, elapsed_sec=elapsed)
+                                   http_status=status, elapsed_sec=elapsed, attempts=done)
         raise KrxTransientError(f"{where} 재시도 {self.retries}회 후에도 실패: {last}",
-                                http_status=last_status, elapsed_sec=elapsed)
+                                http_status=last_status, elapsed_sec=elapsed, attempts=tuple(attempts))
 
     @staticmethod
     def _rows(resp: requests.Response) -> list[dict[str, str]] | None:
@@ -175,14 +197,16 @@ class KrxClient:
         return None
 
     @staticmethod
-    def _auth_error(where: str, status: int, text: str, head: str, elapsed: float) -> KrxAuthError:
+    def _auth_error(where: str, status: int, text: str, head: str, elapsed: float,
+                    attempts: tuple[KrxAttempt, ...] = ()) -> KrxAuthError:
         if AUTH_MARK_API in text:
             kind, label = "api_call", f"{AUTH_MARK_API} (서비스 미승인)"
         elif AUTH_MARK_KEY in text:
             kind, label = "key", f"{AUTH_MARK_KEY} (인증키 문제)"
         else:
             kind, label = "unknown", "Unauthorized (분류 불가)"
-        return KrxAuthError(f"{where} http={status} {label}: {head!r}", kind=kind, http_status=status, elapsed_sec=elapsed)
+        return KrxAuthError(f"{where} http={status} {label}: {head!r}", kind=kind, http_status=status, elapsed_sec=elapsed,
+                            attempts=attempts)
 
     def _scrub(self, text: str) -> str:
         """방어: 응답 본문·예외 문자열에 인증키가 섞여 있더라도 메시지로 새지 않게 가린다."""

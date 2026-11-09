@@ -25,9 +25,9 @@ log = logging.getLogger(__name__)
 KIND_PRE_OPEN, KIND_POST_CLOSE = "pre_open", "post_close"
 KINDS = (KIND_PRE_OPEN, KIND_POST_CLOSE)
 
-COLUMNS = ("snapshot_date", "snapshot_kind", "symbol", '"group"', "name", "halted", "liquidation", "managed", "alarm_code",
-           "alarm_risk_notice", "short_over_code", "short_sale_hot", "abnormal_rise", "unfaithful_disclosure", "low_liquidity",
-           "pref_kind", "listed_shares", "raw_fields", "file_mtime", "fetched_at")
+COLUMNS = ("snapshot_date", "snapshot_kind", "symbol", "security_group", "name", "halted", "liquidation", "managed",
+           "alarm_code", "alarm_risk_notice", "short_over_code", "short_sale_hot", "abnormal_rise", "unfaithful_disclosure",
+           "low_liquidity", "pref_kind", "listed_shares", "raw_fields", "file_mtime", "fetched_at")
 _UPSERT = (
     f"INSERT INTO symbol_status_daily ({', '.join(COLUMNS)}) VALUES ({', '.join('?' for _ in COLUMNS)}) "
     "ON CONFLICT(snapshot_date, snapshot_kind, symbol) DO UPDATE SET "

@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -24,7 +25,7 @@ from zoneinfo import ZoneInfo
 from quant_trading.collector import krx_store as store
 from quant_trading.collector.dates import normalize_date
 from quant_trading.collector.krx_client import (
-    KrxAuthError, KrxClient, KrxError, KrxQuotaError, KrxResponseError, KrxTransientError,
+    KrxAttempt, KrxAuthError, KrxClient, KrxError, KrxQuotaError, KrxResponseError, KrxTransientError,
 )
 from quant_trading.collector.krx_probe import KIND_ETF, KIND_INDEX, KIND_ISSUE, KIND_STOCK, service_kind
 from quant_trading.collector.krx_rows import ParseError, convert_rows, is_blank_etf_row
@@ -89,6 +90,7 @@ class DatePlan:
 class LoadResult:
     started_at: datetime
     finished_at: datetime
+    run_id: str = ""                   # 실행 식별자 (YYYYMMDDTHHMMSS-<pid>) - krx_call_log.run_id
     planned: int = 0
     processed: int = 0                 # 적재(또는 휴장일 확정·pending)까지 끝낸 날짜 수
     trading_days: int = 0
@@ -161,6 +163,8 @@ class _Loader:
     def __init__(self, conn, client: KrxClient, st: LoadSettings, *, clock: Callable[[], datetime], until: str) -> None:
         self.conn, self.client, self.st, self.clock, self.until = conn, client, st, clock, until
         self.result = LoadResult(started_at=clock(), finished_at=clock(), budget=st.daily_budget)
+        self.run_id = f"{self.result.started_at:%Y%m%dT%H%M%S}-{os.getpid()}"
+        self.result.run_id = self.run_id
         self.today = self.result.started_at.date().isoformat()
         self.calls_today = store.calls_on(conn, self.today)
 
@@ -169,33 +173,47 @@ class _Loader:
         if self.calls_today >= self.st.daily_budget:
             raise BudgetReached(f"일일 예산 도달 ({self.calls_today}/{self.st.daily_budget})")
         called_at = self.clock().isoformat(timespec="seconds")
-        self.calls_today += 1
-        self.result.calls += 1
         try:
             resp = self.client.call(service, bas_dd)
         except KrxError as exc:
             outcome = (store.OUTCOME_AUTH if isinstance(exc, KrxAuthError) else store.OUTCOME_QUOTA if isinstance(exc, KrxQuotaError)
                        else store.OUTCOME_TRANSIENT if isinstance(exc, KrxTransientError) else store.OUTCOME_PARSE)
-            self._log(store.CallLogEntry(called_at, service, bas_dd, exc.http_status, None, exc.elapsed_sec, outcome, str(exc)[:500]))
+            attempts = exc.attempts or (KrxAttempt(exc.http_status, exc.elapsed_sec, None),)
+            self._log_attempts(called_at, service, bas_dd, attempts, rows=None, outcome=outcome, error_text=str(exc)[:500])
             raise LoadAborted(f"{service} {bas_dd} {exc.__class__.__name__}: {exc}") from exc
         outcome = store.OUTCOME_OK if resp.rows else store.OUTCOME_EMPTY
-        self._log(store.CallLogEntry(called_at, service, bas_dd, resp.http_status, len(resp.rows), resp.elapsed_sec, outcome))
+        attempts = resp.attempts or (KrxAttempt(resp.http_status, resp.elapsed_sec, None),)
+        self._log_attempts(called_at, service, bas_dd, attempts, rows=len(resp.rows), outcome=outcome, error_text=None)
         return resp.rows
+
+    def _log_attempts(self, called_at: str, service: str, bas_dd: str, attempts: tuple[KrxAttempt, ...], *,
+                      rows: int | None, outcome: str, error_text: str | None) -> None:
+        """HTTP 시도 1건 = 장부 1행. 마지막 시도가 아닌 행은 outcome=transient, error_text 는 그 시도의 사유."""
+        total = len(attempts)
+        for i, att in enumerate(attempts, start=1):
+            final = i == total
+            self._log(store.CallLogEntry(called_at, service, bas_dd, i, self.run_id, att.http_status,
+                                         rows if final else None, att.elapsed_sec,
+                                         outcome if final else store.OUTCOME_TRANSIENT,
+                                         error_text if final else att.error_text))
+        self.calls_today += total          # 예산은 HTTP 요청 수 기준 (재시도 포함)
+        self.result.calls += total
 
     def _log(self, entry: store.CallLogEntry) -> None:
         store.insert_call_log(self.conn, entry)
         self.result.outcomes[entry.outcome] += 1
 
     def mark_parse_errors(self, service: str, bas_dd: str, errors: list[ParseError]) -> None:
-        """변환 실패가 있으면 그 호출의 장부 행을 parse_error 로 바꾼다 (행 수는 응답 행 수 그대로)."""
+        """변환 실패가 있으면 그 서비스·기준일의 가장 최근 장부 행(마지막 시도)을 parse_error 로 바꾼다 (행 수는 응답 행 수 그대로)."""
         if not errors:
             return
         text = f"parse_error {len(errors)}건: " + "; ".join(str(e) for e in errors[:PARSE_ERROR_TEXT_LIMIT])
         with self.conn:
             self.conn.execute(
-                "UPDATE krx_call_log SET outcome = ?, error_text = ? WHERE service = ? AND bas_dd = ? AND called_at = "
-                "(SELECT MAX(called_at) FROM krx_call_log WHERE service = ? AND bas_dd = ?)",
-                (store.OUTCOME_PARSE, text, service, bas_dd, service, bas_dd))
+                "UPDATE krx_call_log SET outcome = ?, error_text = ? WHERE (called_at, service, bas_dd, attempt) IN "
+                "(SELECT called_at, service, bas_dd, attempt FROM krx_call_log WHERE service = ? AND bas_dd = ?"
+                " ORDER BY called_at DESC, attempt DESC LIMIT 1)",
+                (store.OUTCOME_PARSE, text, service, bas_dd))
         self.result.outcomes[store.OUTCOME_OK] -= 1
         self.result.outcomes[store.OUTCOME_PARSE] += 1
         self.result.parse_errors += len(errors)
@@ -311,8 +329,8 @@ def load(
     loader = _Loader(conn, client, st, clock=clock, until=until_iso)
     plans = plan_dates(conn, st, since=since_iso, until=until_iso, today=today.isoformat())
     loader.result.planned = len(plans)
-    log.info("KRX 적재 시작: 대상 %d일 (%s ~ %s, %s), 오늘 호출 %d/%d", len(plans), since_iso, until_iso, st.history_order,
-             loader.calls_today, st.daily_budget)
+    log.info("KRX 적재 시작: run_id=%s 대상 %d일 (%s ~ %s, %s), 오늘 호출 %d/%d", loader.run_id, len(plans), since_iso,
+             until_iso, st.history_order, loader.calls_today, st.daily_budget)
     try:
         for plan in plans:
             loader.process(plan)

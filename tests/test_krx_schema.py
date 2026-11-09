@@ -112,7 +112,9 @@ def test_calendar_and_call_log(conn):
     assert store.calendar_status(conn, "2026-09-17") is None
     assert store.calendar_between(conn, "2026-09-01", "2026-09-30") == {"2026-09-18": 1, "2026-09-25": 0}
     for i, outcome in enumerate(("ok", "empty", "empty")):
-        store.insert_call_log(conn, store.CallLogEntry(f"2026-10-06T08:15:0{i}+09:00", "stock_kospi", "2026-10-01", 200, 0, 0.5, outcome))
-    store.insert_call_log(conn, store.CallLogEntry("2026-10-05T23:59:59+09:00", "etf", "2026-10-01", None, None, None, "transient", "timeout"))
+        store.insert_call_log(conn, store.CallLogEntry(f"2026-10-06T08:15:0{i}+09:00", "stock_kospi", "2026-10-01", 1, "r1",
+                                                       200, 0, 0.5, outcome))
+    store.insert_call_log(conn, store.CallLogEntry("2026-10-05T23:59:59+09:00", "etf", "2026-10-01", 1, "r1",
+                                                   None, None, None, "transient", "timeout"))
     assert store.calls_on(conn, "2026-10-06") == 3 and store.calls_on(conn, "2026-10-05") == 1 and store.calls_on(conn, "2026-10-04") == 0
     assert store.empty_calls(conn, "stock_kospi", "2026-10-01") == ["2026-10-06T08:15:01+09:00", "2026-10-06T08:15:02+09:00"]
