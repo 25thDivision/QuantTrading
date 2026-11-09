@@ -122,7 +122,10 @@ kis:                # 한국투자증권 일 단위 조회 (결정 12). 지시 �
   holiday:                      # 국내휴장일조회 [국내주식-040] - 모의투자 미지원, k12 실전 키로만. 공식 개요 "1일 1회" 권고
     tr_id: CTCA0903R
     path: /uapi/domestic-stock/v1/quotations/chk-holiday
-    run_once_per_day: true
+    run_at: "07:30"             # kis-holiday.timer 시각 (KRX 적재 08:15·장 전 스냅샷 08:50 보다 앞). deploy/systemd/kis-holiday.timer 의 OnCalendar 와 일치시킬 것
+    run_once_per_day: true      # kis_call_log 에 오늘 ok 행이 있으면 호출하지 않음. --force 로만 우회
+    max_pages: 4                # 연속조회 총 페이지 상한(첫 호출 포함, 1회 약 24일분 어림 → 약 96일) - 추정값, 프로브 후 조정. 0 이면 1회만
+    paging: ctx_nk_to_bass_dt   # 연속조회 방식 (추정: 응답 ctx_area_nk 를 BASS_DT 에 재투입). 프로브 결과가 다르면 값 변경·구현 분기는 별도 문안
   ksdinfo:                      # 예탁원정보 (corporate_actions 원천 후보 3종) - 모의투자 미지원. 필드·파라미터는 docs/specs/kis/ksdinfo-*.md
     rev_split:    {tr_id: HHKDB669105C0, path: /uapi/domestic-stock/v1/ksdinfo/rev-split}      # 액면교체일정 [148], MARKET_GB 있음
     bonus_issue:  {tr_id: HHKDB669101C0, path: /uapi/domestic-stock/v1/ksdinfo/bonus-issue}    # 무상증자일정 [144]

@@ -35,7 +35,7 @@ class ProbeOutcome:
         return self.http_status == 200 and self.rt_cd == "0"
 
 
-def _rows_of(body: Any, key: str) -> list[dict[str, Any]]:
+def rows_of(body: Any, key: str) -> list[dict[str, Any]]:
     """output 이 object 면 1행 목록으로, array 면 그대로, 없으면 빈 목록."""
     if not isinstance(body, dict):
         return []
@@ -78,7 +78,7 @@ def probe_ksd(client: KisQuoteClient, cfg: dict[str, Any], *, date_from: str, da
             params["MARKET_GB"] = market_gb
         resp = client.request_raw(str(spec["path"]), str(spec["tr_id"]), params)
         rt_cd, _, _ = _head(resp, f"ksdinfo {name} {spec['tr_id']}", params, emit)
-        rows = _rows_of(resp.body, "output1")
+        rows = rows_of(resp.body, "output1")
         emit(f"3. 행 수: {len(rows)}")
         emit(f"4. 첫 {KSD_FIRST_ROWS}행:" if rows else f"4. 첫 {KSD_FIRST_ROWS}행: {NONE}")
         for row in rows[:KSD_FIRST_ROWS]:
@@ -102,7 +102,7 @@ def probe_holiday(client: KisQuoteClient, cfg: dict[str, Any], *, base_date: str
     body = resp.body if isinstance(resp.body, dict) else {}
     raw = body.get("output")
     kind = "array" if isinstance(raw, list) else "object" if isinstance(raw, dict) else NONE
-    rows = _rows_of(resp.body, "output")
+    rows = rows_of(resp.body, "output")
     emit(f"3. output 타입: {kind} / 행 수: {len(rows)}")
     emit("4. 전 행 (" + ", ".join(HOLIDAY_FIELDS) + "):" if rows else f"4. 전 행: {NONE}")
     for row in rows:

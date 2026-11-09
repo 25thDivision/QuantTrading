@@ -1,5 +1,6 @@
 """SQLite 스키마 - 분봉 수집 두 테이블(candles_1m, collector_log)과 종목정보파일 플래그 스냅샷
-(symbol_status_daily·symbol_status_snapshot). KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
+(symbol_status_daily·symbol_status_snapshot), 한국투자증권 일 단위 조회 장부(kis_call_log).
+KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
 
 설계 근거 (DECISIONS.md 결정 11·12, ARCHITECTURE.md 2절):
 - candles_1m: 원본가 불변 저장. (symbol, ts) 복합 PK 로 재실행 멱등(UPSERT). ts 는 API 분봉 라벨을
@@ -10,6 +11,9 @@
 - symbol_status_snapshot: 스냅샷 신선도 헤더(하루 2행). 파일 해시·mtime·행 수를 행마다 반복하지 않고 여기에 남겨
   캐시 폴백과 "다운로드는 됐으나 공급자가 갱신하지 않음" 을 사후에 판정할 수 있게 한다 (보완 43).
   원문은 행마다 두지 않고 data/symbol_master/ 의 zip 으로 보관한다 (보완 46).
+- kis_call_log: 한국투자증권 일 단위 조회의 호출 장부 (결정 12 "kis_call_log"). HTTP 요청 1건 = 장부 1행.
+  1일 1회 보호(국내휴장일조회)는 이 값의 날짜 부분으로 판정하므로 called_at 은 반드시 Asia/Seoul ISO 초 단위다.
+  분봉 스윕 장부(collector_log)와 프로브 모드는 이 장부를 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -93,12 +97,31 @@ CREATE TABLE IF NOT EXISTS symbol_status_snapshot (
     run_id         TEXT    NOT NULL,
     PRIMARY KEY (snapshot_date, snapshot_kind)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS kis_call_log (
+    called_at    TEXT    NOT NULL,   -- ISO 초 단위, Asia/Seoul (1일 1회 보호는 이 값의 날짜 부분)
+    service      TEXT    NOT NULL,   -- holiday (훗날 ksd_rev_split 등)
+    bas_dd       TEXT    NOT NULL,   -- 요청 BASS_DT 'YYYY-MM-DD'
+    attempt      INTEGER NOT NULL,   -- HTTP 시도 순번 (request_raw 는 재시도 없음 → 1)
+    run_id       TEXT    NOT NULL,   -- 실행 식별자 (YYYYMMDDTHHMMSS-<pid>)
+    env          TEXT    NOT NULL,   -- real | paper
+    http_status  INTEGER,            -- 응답을 못 받으면 NULL
+    rt_cd        TEXT,
+    msg_cd       TEXT,
+    rows         INTEGER,            -- 응답 행 수
+    duration_sec REAL,
+    outcome      TEXT    NOT NULL,   -- ok / error / auth_error / transient
+    error_text   TEXT,
+    PRIMARY KEY (called_at, service, bas_dd, attempt)
+) WITHOUT ROWID;
 """
 
 # 인덱스는 옛 형태 테이블 검사(check_schema)를 통과한 뒤 만든다 - 옛 테이블에 없는 컬럼 인덱스로 먼저 실패하지 않게.
 SCHEMA_INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS ix_candles_1m_date ON candles_1m (trade_date, symbol);
 CREATE INDEX IF NOT EXISTS ix_collector_log_run ON collector_log (run_id);
+CREATE INDEX IF NOT EXISTS ix_kis_call_log_run ON kis_call_log (run_id);
+CREATE INDEX IF NOT EXISTS ix_kis_call_log_service_day ON kis_call_log (service, called_at);
 """
 
 SCHEMA_SQL = SCHEMA_TABLES_SQL + SCHEMA_INDEX_SQL
