@@ -5,3 +5,12 @@ __pycache__/
 .pytest_cache/
 *.sqlite3*
 data/
+
+# claude-duo (claude-local-worker-kit) 생성 파일
+AGENTS.md
+KICKOFF_PROMPT.md
+agents/
+.claude/settings.json
+
+# 지시문안 md
+지시문안*.md

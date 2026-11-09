@@ -1,7 +1,7 @@
 # ARCHITECTURE.md - 구현 지침
 
 > Claude Code 및 구현 채팅이 참조하는 설계도. 결정의 근거와 수치는 DECISIONS.md가 원본이며, 충돌 시 DECISIONS.md가 우선한다.
-> 최종 갱신: 2026-10-06 (2차)
+> 최종 갱신: 2026-11-09
 
 ---
 
@@ -28,8 +28,9 @@
 **모듈 목록**
 ```
 collector      시세·종목 상태 수집. 분봉 = 한국투자증권 마감 후 REST 스윕 배치 (결정 11, 가동 중 2026-09-22~) /
-               지정내역 = 종목정보파일 플래그 일별 스냅샷 2회 (결정 12, 지시 문안 3) / 휴장일 = 국내휴장일조회 k12 실전 키 하루 1회 (결정 12, 지시 문안 4 예정) /
-               일 단위 시장 데이터 = KRX 공식 API (결정 12). 클라이언트·프로브 구현 완료(2026-09-30), 적재는 지시 문안 2
+               지정내역 = 종목정보파일 플래그 일별 스냅샷 2회 + zip 원본 보관 (결정 12, 지시 문안 3 구현·문안 4 보완) /
+               휴장일 = 국내휴장일조회 k12 실전 키 하루 1회 (결정 12, 지시 문안 4) /
+               일 단위 시장 데이터 = KRX 공식 API (결정 12). 클라이언트·프로브 2026-09-30, 상태 주도 적재기 2026-10-07 구현 완료(지시 문안 3), 오류 정책·장부 키 보완은 지시 문안 4
 strategy/      전략 플러그인들 (1a.py, 1b.py, 1bp.py, 2c.py, ...)
 portfolio      자본 배분, 포지션 크기 산출(고정 리스크), 슬롯 관리(레버리지/파킹/대체)
 execution      주문 전송·체결 확인·재시도·취소. 레이트 리미터 내장(한국투자증권 초당 호출 제한 대응)
@@ -59,7 +60,7 @@ collector_log  수집 장부. PK (trade_date, symbol, kind) WITHOUT ROWID. kind 
 ```
 - 완전성 판정·장부 보호·재시도·소급 규칙은 DECISIONS.md 결정 11(견고화 절)이 원본
 
-KRX 일 단위 데이터 (결정 12, 구성 확정 2026-10-06 - 컬럼명은 지시 문안 2에서 최종 확정. 빈 문자열만 NULL, "0"은 값, 정수·실수 타입 변환, 원본가 불변):
+KRX 일 단위 데이터 (결정 12, 구성 확정 2026-10-06, 컬럼명 확정 2026-10-07 - 정의는 `quant_trading/collector/krx_schema.py`. 빈 문자열만 NULL, "0"은 값, 정수·실수 타입 변환, 원본가 불변):
 ```
 daily_stock     주권 일봉, 코스피·코스닥 공유. PK (market, symbol, trade_date). market은 호출 서비스에서(kospi/kosdaq),
                 symbol 6자리 TEXT. 시가/고가/저가/종가(정규시장), 거래량/거래대금(시간외·애프터마켓 포함 전체),
@@ -69,15 +70,22 @@ daily_etf       ETF 일봉. PK (symbol, trade_date). 주권 필드 + NAV·순자
 daily_index     코스피 계열 지수 일봉. PK (trade_date, idx_class, idx_name). 지수 마스터 없음(목록 가변, 2010년 41건·2026년 54건)
 issue_info      종목기본정보 스냅샷, 코스피·코스닥 공유. PK (market, symbol, as_of). as_of = 요청 basDd(응답에 날짜 없음).
                 표준코드·정식명·약명·영문명·상장일·증권구분·소속부·주식종류·액면가·상장주식수
-calendar_krx    KRX 거래일 캘린더. PK date. 과거는 코스피 일별매매 응답 행 수 0 = 휴장일, 미래는 소스 확정 후
-krx_call_log    KRX 호출 장부. PK (called_at, service, bas_dd). http_status·rows·duration·outcome·error_text.
-                일일 예산 집계와 과거 적재 재개의 근거. collector_log(분봉 장부)와 분리
+calendar_krx    거래일 캘린더. PK date. is_trading_day, source(krx_rows / krx_empty / kis_holiday), decided_at.
+                과거는 코스피 일별매매 응답 행 수 0 = 휴장일(7일 유예 후 확정), 미래는 국내휴장일조회(opnd_yn).
+                KRX 실적이 있는 날짜는 휴장일 응답이 덮지 않고, 다르면 #alerts (지시 문안 4)
+krx_call_log    KRX 호출 장부. PK (called_at, service, bas_dd, attempt) + run_id (보완 44, 지시 문안 4). HTTP 요청 1건 = 1행.
+                http_status·rows·duration·outcome·error_text. 일일 예산 집계와 과거 적재 재개의 근거. collector_log(분봉 장부)와 분리
 ```
-한국투자증권 일 단위 (결정 12, 2026-10-06):
+한국투자증권 일 단위 (결정 12, 2026-10-06 / 보완 43~46 2026-10-11):
 ```
-symbol_status_daily  종목정보파일 지정내역 플래그 스냅샷. PK (snapshot_date, snapshot_kind, symbol). snapshot_kind pre_open(08:50) / post_close(20:30).
-                     group·name·거래정지·정리매매·관리종목·시장경고코드·경고위험예고·단기과열·공매도과열·이상급등·불성실공시·저유동성·우선주구분·상장주식수.
-                     유니버스는 pre_open 판만 읽는다. calendar_krx 미래분은 국내휴장일조회 응답(opnd_yn)으로 채운다
+symbol_status_daily    종목정보파일 지정내역 플래그 스냅샷(종목 행). PK (snapshot_date, snapshot_kind, symbol). snapshot_kind pre_open(08:50) / post_close(20:30).
+                       security_group·name·거래정지·정리매매·관리종목·시장경고코드·경고위험예고·단기과열·공매도과열·이상급등·불성실공시·저유동성·우선주구분·상장주식수.
+                       원문 JSON 없음. 파일의 전 그룹 기록. 유니버스는 pre_open 판만 읽는다
+symbol_status_snapshot 스냅샷 헤더(하루 2행). PK (snapshot_date, snapshot_kind). is_fallback·file_sha256·file_mtime·file_path·rows·rows_by_group·
+                       parser_version·fetched_at·run_id. 신선도(캐시 폴백·미갱신) 판정의 근거
+kis_call_log           한국투자증권 일 단위 조회 호출 장부. PK (called_at, service, bas_dd, attempt) + run_id·env·rt_cd·msg_cd 등.
+                       휴장일 수집의 1일 1회 보호 근거. 분봉 스윕·프로브는 쓰지 않는다
+data/symbol_master/    내려받은 종목정보파일 zip을 <날짜>_<종류>.zip으로 그대로 보관(git 제외). 스냅샷 재파싱과 분봉 스윕 캐시 폴백의 유일한 원천
 ```
 
 유니버스 모듈 산출물 (Phase 1-4에서 확정):
@@ -138,7 +146,7 @@ decisions_log   층 2·3 발동, 승격/강등, 예외 발동 한 줄 로그
 | 무인 복구 | AC 자동부팅 → netplan(optional:true) → Tailscale → SSH 사슬 전체 실증 완료. 완전 정지 시 가족 수동 재부팅 요청 |
 | 개발 환경 | **랩실 서버** (Dell Precision 7920 Tower, Xeon Silver 4214R×2, Ubuntu 24.04, stl 계정, SSH 접속). 시스템 Python 버전과 무관하게 프로젝트는 uv가 3.12를 조달 |
 | 저장소 | GitHub 25thDivision/QuantTrading (private), 기본 브랜치 master. k12 체크아웃: /home/seokhyeon/QuantTrading (2026-09-18 배포) |
-| 상주 서비스 | **collector.timer 20:30** (2026-09-22 활성화. 유닛 파일은 매일 기동으로 변경 완료 2026-09-30, k12 반영은 push 후 deploy_units.sh - 그 전까지 k12는 월~금) + collector.service (TimeoutStartSec=6h - 실측 217~222분 기반, Restart=on-failure, RestartSec=5min). 휴장일·주말 실행은 최근 거래일 재시도로 무해. 지시 문안 3에서 추가: krx-daily.timer(08:15, 상태 주도 적재 - 과거 적재도 같은 유닛이 일일 예산 안에서 이어감), symbol-status-preopen.timer(08:50 종목정보파일 장 전 판 스냅샷). 휴장일 수집은 지시 문안 4 |
+| 상주 서비스 | **collector.timer 20:30** (2026-09-22 활성화. 유닛 파일은 매일 기동으로 변경 완료 2026-09-30, k12 반영은 push 후 deploy_units.sh - 그 전까지 k12는 월~금) + collector.service (TimeoutStartSec=6h - 실측 217~222분 기반, Restart=on-failure, RestartSec=5min). 휴장일·주말 실행은 최근 거래일 재시도로 무해. 지시 문안 3에서 추가(유닛 파일 작성 완료 2026-10-07, k12 반영은 push 후 deploy_units.sh + `enable --now`): krx-daily.timer(08:15, TimeoutStartSec=3h, 상태 주도 적재 - 과거 적재도 같은 유닛이 일일 예산 7,000회 안에서 이어감, 첫 2~3일은 약 2시간씩), symbol-status-preopen.timer(08:50 종목정보파일 장 전 판 스냅샷). 지시 문안 4에서 추가: kis-holiday.timer(07:30, 국내휴장일조회 1일 1회, k12 실전 키 전용, TimeoutStartSec=10m). 하루 순서: 07:30 휴장일 → 08:15 KRX 적재 → 08:50 장 전 스냅샷 → 20:30 분봉 스윕 + 장 후 스냅샷 |
 | 배포 | 코드: 랩실 push → k12 pull → uv sync. 유닛: scripts/deploy_units.sh (복사 → daemon-reload, 결정 8). 잔여 없음 |
 
 **역할 분담 (결정 8 반영)**
@@ -157,14 +165,14 @@ decisions_log   층 2·3 발동, 승격/강등, 예외 발동 한 줄 로그
 collector:
   symbol_source: {file: kospi_code.mst, groups: [ST, EF], common_only: false}   # 우선주 포함. ST = KRX 주권과 코드 일치(2026-10-06 대조)
   symbol_status: {pre_open_time: "08:50", post_close: with_sweep}            # 지정내역 플래그 스냅샷 2회 (결정 12, 지시 문안 3)
+  symbol_master_dir: data/symbol_master # 종목정보파일 zip 보관 폴더 = 캐시 폴백 원천 (보완 46, 지시 문안 4)
   backfill_api: FHKST03010230
   max_consecutive_date_mismatch: 5      # 연속 불일치 시 "수집 창 닫힘" 중단
   transient_codes: [EGW00316]           # retries·backoff_sec 동반 (2회, 2초)
-collector:
-  rate_per_sec: {real: 15, paper: 1}    # 실전 한도 18건/초 대비 여유 (실제 config 위치는 collector 아래 - 2026-10-06 정정)
+  rate_per_sec: {real: 15, paper: 1}    # 실전 한도 18건/초 대비 여유
 broker:
-  lock: {dir: data/locks, wait_log_sec: 60}   # 구현 완료 2026-09-30. env별 파일 잠금, 대기 기본, --no-wait 로 즉시 종료.
-                                              # 재시도 주기 = 로그 주기(60초). 5초/60초 분리는 지시 문안 2
+  lock: {dir: data/locks, retry_sec: 5, wait_log_sec: 60}   # env별·이름별 파일 잠금(kis_<env>.lock, krx.lock), 대기 기본, --no-wait 로 즉시 종료.
+                                                            # 재시도 5초·로그 60초 분리 완료 2026-10-07 (지시 문안 3)
 alerts:                                 # 구현 완료 2026-09-30 (config 최상위)
   protected_ratio: 0.30                 # 보호됨 비율 사이렌 기준 (어림값)
   protected_count: 20                   # 보호됨 건수 사이렌 기준 (둘 다 충족 시 발송)
@@ -181,14 +189,20 @@ krx:                                    # 결정 12. 클라이언트·프로브 
   timeout_sec: 30
   retries: 2
   retry_backoff_sec: 2.0
-  daily_budget: 7000                    # 인증키당 한도 10,000 대비 여유 (집계·차단은 지시 문안 2)
+  daily_budget: 7000                    # 인증키당 한도 10,000 대비 여유. 집계는 krx_call_log 행 수(HTTP 요청 1건 = 1행)
   history_start: "2010-01-04"           # 따옴표 필수 - YAML 날짜 객체 방지
-  issue_info: {history: monthly_first_trading_day, on_new_symbol: true, forward: daily}   # 지시 문안 2
+  issue_info: {history: monthly_first_trading_day, on_new_symbol: true, forward: daily}   # 월 1회(과거 적재는 월말 거래일로 근사)·신규 종목·어제 매일
   daily_run_at: "08:15"                 # 전일분 갱신(08:00) 이후 상태 주도 적재, 지시 문안 3
   history_order: desc                   # 과거 적재 순서(최근 → 과거). 지시 문안 3
   empty_finalize_after_days: 7          # 빈 응답 날짜를 휴장일로 확정하는 경과일(그 전엔 pending 재시도)
-kis:                                    # 한국투자증권 일 단위 (결정 12). 지시 문안 3은 프로브만, 수집은 문안 4
-  holiday: {run_once_per_day: true}     # 국내휴장일조회 1일 1회 권고
+  max_consecutive_skips: 5              # 일시·형식 오류로 연속 건너뛴 날짜가 이 수에 닿으면 중단 (보완 41, 지시 문안 4)
+  lock: {name: krx}                     # data/locks/krx.lock - 한국투자증권 잠금과 별개
+kis:                                    # 한국투자증권 일 단위 (결정 12). 프로브는 지시 문안 3, 휴장일 수집은 문안 4
+  holiday:
+    run_at: "07:30"                     # kis-holiday.timer
+    run_once_per_day: true              # kis_call_log 기준. --force로만 우회
+    max_pages: 4                        # 연속조회 상한 (추정값 - 프로브 후 조정). 0이면 1회만
+    paging: ctx_nk_to_bass_dt           # 연속조회 방식 (추정 - ctx_area_nk를 BASS_DT에 재투입)
 notify:
   discord: {webhooks: ...}              # 값은 .env (DISCORD_WEBHOOK_COLLECTOR/_PAPER/_LIVE/_ALERTS)
 ```
@@ -251,7 +265,7 @@ personal_bot:       # 개인 자동화 봇 (결정 8·9)
 | 세션 0 | 저장소 부트스트랩: 골격·문서 배치·설정 골격만 (기능 코드 없음) | 별도 지시 문안으로 진행 |
 | 0-A | 저장소 구조 반영(결정 10) + API 실스펙 실측·문서 확인 | **완료 (2026-09-14)** - 실측 결과는 DECISIONS.md 결정 9·11과 11절에 반영 |
 | 0-B | **분봉 스윕 수집기**(결정 11) + SQLite 스키마 + systemd 유닛·타이머 + 디스코드 알림 기초 + 견고화(수정 3·4) | **완료 (2026-09-22)** - 테스트 44건, 검증 스윕 통과(KRX 공식 대조), collector.timer 가동. 이월 항목(M-3 실험, 장부 정리) 2026-09-30 종결 |
-| 1 | 데이터 파이프라인 (결정 12). 범위 (A): ③ 백테스트·유니버스 필수분 우선 | **진행 중 (2026-09-28 착수)**. 1-1 KRX 클라이언트 + 프로브 + 기존 수집기 보강(보호됨 집계·잠금·소급 대상 집합·타이머 매일): **완료 2026-09-30** (커밋 7건, 테스트 108건, 프로브 실행 2026-10-01) → 1-2 스키마·config 확정: **완료 2026-10-06** (결정 12) → 1-3 KRX 일별 배치·과거 적재(일일 예산) + 종목정보파일 플래그 스냅샷 + 예탁원정보·휴장일 프로브: 지시 문안 3 / 휴장일 수집기: 지시 문안 4 → 1-4 Parquet 내보내기 timer + pull 스크립트 + 유니버스 모듈(features_daily·universe_log) → 1-5 검증(KRX 일봉 vs 분봉 집계 대조, 유니버스 손검증, 적재 장부 구멍 없음, 증권구분별 ③ 필터 통과 수). 병행 완료: 한국투자증권 카탈로그 조사 + 증권구분 코드 대조 (2026-10-06 보고, 결정 12 반영) |
+| 1 | 데이터 파이프라인 (결정 12). 범위 (A): ③ 백테스트·유니버스 필수분 우선 | **진행 중 (2026-09-28 착수)**. 1-1 KRX 클라이언트 + 프로브 + 기존 수집기 보강(보호됨 집계·잠금·소급 대상 집합·타이머 매일): **완료 2026-09-30** (커밋 7건, 테스트 108건, 프로브 실행 2026-10-01) → 1-2 스키마·config 확정: **완료 2026-10-06** (결정 12) → 1-3 KRX 일별 배치·과거 적재(일일 예산) + 종목정보파일 플래그 스냅샷 + 예탁원정보·휴장일 프로브: **지시 문안 3 구현 완료 2026-10-07** (커밋 7건 4eeac46~2f5e54d, 테스트 156건, k12 반영·첫 실행·프로브 3회는 석현님 수행) / 보완 41~46 + 휴장일 수집기: 지시 문안 4 (2026-11-09 발행) → 1-4 Parquet 내보내기 timer + pull 스크립트 + 유니버스 모듈(features_daily·universe_log) → 1-5 검증(KRX 일봉 vs 분봉 집계 대조, 유니버스 손검증, 적재 장부 구멍 없음, 증권구분별 ③ 필터 통과 수). 병행 완료: 한국투자증권 카탈로그 조사 + 증권구분 코드 대조 (2026-10-06 보고, 결정 12 반영) |
 | 1-후반 | 일 단위 배치류 확장: 투자자별 매매동향, 공매도, 지수 분봉, ETF 구성정보·괴리율, 기업행위(corporate_actions) 수집 자동화 | 소스 확정 후. 1 본편과 분리 |
 | 2 | 백테스트 1차(vectorbt): ③ 2-C (+2-A/2-B), ① 1-A 일봉 근사 | 시장 필터·종목 수·손절 민감도 비교 포함. 실행 머신 결정 선행 (11절) |
 | 3 | 자작 이벤트 엔진 + FillModel + 2차 검증 → **오디션 판정, 층 3 수치 재설정** | 합격 판정의 주체 |
@@ -275,21 +289,22 @@ QuantTrading/
 ├── config/              # 설정 (5절 구조), 시크릿은 .env 별도 (git 제외)
 ├── quant_trading/     # 최상위 패키지 - 자체 코드 본체 (결정 10, editable 설치)
 │   ├── __init__.py    # 각 하위 모듈에도 __init__.py
-│   ├── collector/     # 한국투자증권 분봉 스윕 + KRX 클라이언트(krx_client.py)·프로브(krx_probe.py). KRX 적재는 지시 문안 2
+│   ├── collector/     # 한국투자증권 분봉 스윕(sweep.py·store.py·symbols.py·runner.py) + KRX(krx_client.py·krx_probe.py·krx_schema.py·krx_rows.py·krx_store.py·krx_load.py)
+│   │                  # + 종목정보파일 스냅샷(symbol_status.py) + 한국투자증권 프로브(kis_probe.py) + 휴장일 수집(kis_holiday.py - 지시 문안 4)
 │   ├── strategy/      # 플러그인들 + 공용 인터페이스
 │   ├── portfolio/
 │   ├── execution/
 │   ├── risk/
-│   ├── broker/        # kis_real / kis_paper / 스텁 어댑터, ratelimit.py, lock.py(env별 파일 잠금)
+│   ├── broker/        # kis_real / kis_paper / 스텁 어댑터(kis_quote.py - request_raw 포함), ratelimit.py, lock.py(env별·이름별 파일 잠금, retry 5초/log 60초)
 │   ├── backtest/      # vectorbt 스캔, 이벤트 엔진, FillModel
 │   ├── simulator/
 │   ├── notify/
 │   └── bus/           # 메시지 버스 인터페이스 (인메모리 구현)
 ├── deploy/
-│   └── systemd/       # 유닛·슬라이스 파일 원본 (복사식 배포 - 결정 8)
-├── scripts/           # sweep_candles.py(스윕·소급 진입점, --no-wait), deploy_units.sh(유닛 배포), sweep_krx.py(KRX 진입점, --probe 구현 완료·--load 적재는 지시 문안 3),
-│                      # sweep_kis.py(한국투자증권 일 단위 진입점 - 지시 문안 3에서 프로브 모드, 문안 4에서 휴장일 수집), snapshot_symbols.py(종목정보파일 스냅샷 - 지시 문안 3)
-├── tests/             # 스텁·픽스처 기반 자동 테스트 (2026-09-30 기준 108건), fixtures/krx/(명세서 기준으로 교체 예정)
-├── data/              # SQLite·Parquet 내보내기 (git 제외)
+│   └── systemd/       # 유닛·슬라이스 파일 원본 (복사식 배포 - 결정 8): collector, krx-daily(08:15), symbol-status-preopen(08:50), kis-holiday(07:30 - 지시 문안 4)
+├── scripts/           # sweep_candles.py(스윕·소급 진입점, --no-wait), deploy_units.sh(유닛 배포), sweep_krx.py(KRX 진입점, --probe / --load / --dry-run),
+│                      # sweep_kis.py(한국투자증권 일 단위 진입점 - --probe-ksd / --probe-holiday, --holiday는 지시 문안 4), snapshot_symbols.py(종목정보파일 스냅샷 --kind pre_open|post_close)
+├── tests/             # 스텁·픽스처 기반 자동 테스트 (2026-10-07 기준 156건), fixtures/krx/(명세서 기준 교체 완료 2026-10-07)
+├── data/              # SQLite·Parquet 내보내기·locks/·symbol_master/(종목정보파일 zip 보관) (git 제외)
 └── docs/              # DECISIONS.md, ARCHITECTURE.md 사본 유지. specs/<공급자>/ = 외부 명세 원문 + 실측 주석(정본 아님): specs/krx/ 7파일, specs/kis/ README + 13파일(2026-10-06)
 ```
