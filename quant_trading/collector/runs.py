@@ -111,3 +111,16 @@ def finish_run(conn, run_id: str, *, status: str, calls: int | None, rows: int |
     with conn:
         conn.execute("UPDATE runs SET status = ?, finished_at = ?, calls = ?, rows = ?, summary = ? WHERE run_id = ?",
                      (status, now.isoformat(timespec="seconds"), calls, rows, summary, run_id))
+
+
+def finish_run_quietly(conn, run_id: str | None, *, status: str = STATUS_FAILED, summary: str, now: datetime) -> None:
+    """예외 경로의 종료 기록 시도 - 기록이 실패해도 원래 예외의 전파를 막지 않는다 (수집기 공통, 결정 14).
+
+    run_id 가 없으면(start_run 전에 죽은 경우) 아무것도 하지 않는다. summary 는 500자로 자른다.
+    """
+    if run_id is None or conn is None:
+        return
+    try:
+        finish_run(conn, run_id, status=status, calls=None, rows=None, summary=summary[:500], now=now)
+    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
+        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)

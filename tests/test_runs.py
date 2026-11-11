@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import socket
 import sqlite3
@@ -214,3 +215,19 @@ def test_loaded_config_path_follows_load_config(tmp_path):
     finally:
         load_config(env_path=tmp_path / "no.env")       # 모듈 전역 상태를 원래대로 되돌린다
     assert loaded_config_path().name == "config.yaml"
+
+
+def test_finish_run_quietly_swallows_failures_and_skips_without_run_id(tmp_path, caplog):
+    """예외 경로의 종료 기록 시도 - 닫힌 연결이라도 예외를 내지 않고 경고만 남긴다. run_id 가 None 이면 아무것도 안 한다."""
+    conn = connect(tmp_path / "q.sqlite3")
+    run_id = runs.start_run(conn, kind="snapshot", provider="kis", market="kospi", env=None, now=NOW)
+    conn.close()
+    with caplog.at_level(logging.WARNING, logger="quant_trading.collector.runs"):
+        runs.finish_run_quietly(conn, run_id, summary="x" * 600, now=NOW)       # 닫힌 연결 → ProgrammingError 를 삼킨다
+        runs.finish_run_quietly(None, None, summary="없음", now=NOW)
+    assert any("종료 기록 실패" in r.getMessage() for r in caplog.records)
+    conn = connect(tmp_path / "q.sqlite3")
+    try:
+        assert conn.execute("SELECT status FROM runs WHERE run_id = ?", (run_id,)).fetchone()[0] == "running"
+    finally:
+        conn.close()

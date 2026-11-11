@@ -23,7 +23,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from quant_trading.collector.runs import (
-    KIND_SNAPSHOT, PROVIDER_KIS, STATUS_FAILED, STATUS_OK, STATUS_PARTIAL, finish_run, start_run,
+    KIND_SNAPSHOT, PROVIDER_KIS, STATUS_OK, STATUS_PARTIAL, finish_run, finish_run_quietly, start_run,
 )
 from quant_trading.collector.symbols import PARSER_VERSION, MasterRecord, SymbolLoadResult, load_symbols
 from quant_trading.config import collector_market, market_tz, require
@@ -211,16 +211,6 @@ def _notify(cfg: dict[str, Any], purpose: str, message: str) -> None:
         log.warning("알림 전송 중 예외(%s): %s", purpose, exc)
 
 
-def _finish_quietly(conn, run_id: str | None, summary: str, now: datetime) -> None:
-    """예외 경로의 종료(failed) 기록 시도 - 실패해도 원래 예외의 전파를 막지 않는다."""
-    if run_id is None or conn is None:
-        return
-    try:
-        finish_run(conn, run_id, status=STATUS_FAILED, calls=None, rows=None, summary=summary[:500], now=now)
-    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
-        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)
-
-
 def run_snapshot(
     cfg: dict[str, Any],
     kind: str,
@@ -271,9 +261,9 @@ def _run_snapshot(
         loaded = load_symbols(cfg, downloader=downloader, archive=(date, kind))
         summary = snapshot_from_loaded(conn, loaded, kind, snapshot_date=date, now=now, run_id=run_id)
         finish_run(conn, run_id, status=snapshot_status(loaded), calls=0 if loaded.is_fallback else 1,
-                   rows=len(loaded.records), summary=summary.message(), now=now)
+                   rows=len(loaded.records), summary=summary.message(), now=datetime.now(tz))   # 종료 시각은 종료 시점
     except Exception as exc:
-        _finish_quietly(conn, run_id, f"{exc.__class__.__name__}: {exc}", now)
+        finish_run_quietly(conn, run_id, summary=f"{exc.__class__.__name__}: {exc}", now=datetime.now(tz))
         raise
     finally:
         conn.close()

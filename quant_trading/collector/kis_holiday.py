@@ -32,7 +32,7 @@ from quant_trading.collector import krx_store
 from quant_trading.collector.dates import from_api_date, normalize_date, to_api_date
 from quant_trading.collector.kis_probe import rows_of
 from quant_trading.collector.runs import (
-    KIND_HOLIDAY, PROVIDER_KIS, STATUS_FAILED, STATUS_OK, STATUS_PARTIAL, finish_run, start_run,
+    KIND_HOLIDAY, PROVIDER_KIS, STATUS_FAILED, STATUS_OK, STATUS_PARTIAL, finish_run, finish_run_quietly, start_run,
 )
 from quant_trading.collector.schema import connect
 from quant_trading.config import ConfigError, collector_market, market_tz, require
@@ -424,7 +424,7 @@ def run_holiday(
             finish_run(conn, run_id, status=holiday_status(result), calls=result.pages,
                        rows=result.inserted + result.updated, summary=message, now=result.finished_at)
         except Exception as exc:
-            _finish_quietly(conn, run_id, f"{exc.__class__.__name__}: {exc}", current)
+            finish_run_quietly(conn, run_id, summary=f"{exc.__class__.__name__}: {exc}", now=clock())
             message = f"[{LABEL}] 중단: {exc.__class__.__name__}: {exc}"
             log.error(message)
             if notify:
@@ -449,13 +449,3 @@ def _notify(cfg: dict[str, Any], purpose: str, message: str) -> None:
         discord.send(message, cfg, purpose=purpose)
     except Exception as exc:  # noqa: BLE001 - 알림 실패가 수집을 막지 않는다
         log.warning("알림 전송 중 예외(%s): %s", purpose, exc)
-
-
-def _finish_quietly(conn, run_id: str | None, summary: str, now: datetime) -> None:
-    """예외 경로의 종료(failed) 기록 시도 - 실패해도 원래 예외의 전파를 막지 않는다."""
-    if run_id is None or conn is None:
-        return
-    try:
-        finish_run(conn, run_id, status=STATUS_FAILED, calls=None, rows=None, summary=summary[:500], now=now)
-    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
-        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)

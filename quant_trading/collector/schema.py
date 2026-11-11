@@ -216,4 +216,3 @@ def connect(db_path: str | Path, *, busy_timeout_sec: float = 60) -> sqlite3.Con
         conn.close()
         raise
     return conn
-

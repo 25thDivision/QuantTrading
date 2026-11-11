@@ -37,8 +37,8 @@ from quant_trading.collector.krx_client import (
 from quant_trading.collector.krx_probe import KIND_ETF, KIND_INDEX, KIND_ISSUE, KIND_STOCK, service_kind
 from quant_trading.collector.krx_rows import ParseError, convert_rows, is_blank_etf_row
 from quant_trading.collector.runs import (
-    KIND_KRX_LOAD, PROVIDER_KRX, STATUS_ABORTED, STATUS_BUDGET, STATUS_FAILED, STATUS_OK, STATUS_PARTIAL,
-    finish_run, host_name, new_run_id, start_run,
+    KIND_KRX_LOAD, PROVIDER_KRX, STATUS_ABORTED, STATUS_BUDGET, STATUS_OK, STATUS_PARTIAL,
+    finish_run, finish_run_quietly, host_name, new_run_id, start_run,
 )
 from quant_trading.config import krx_markets, market_tz, require
 
@@ -483,16 +483,6 @@ def format_dry_run(plans: list[DatePlan], *, calls_today: int, budget: int, sinc
 
 
 # ------------------------------------------------------------ orchestration
-def _finish_quietly(conn, run_id: str | None, summary: str, now: datetime) -> None:
-    """예외 경로의 종료(failed) 기록 시도 - 실패해도 원래 예외의 전파를 막지 않는다."""
-    if run_id is None or conn is None:
-        return
-    try:
-        finish_run(conn, run_id, status=STATUS_FAILED, calls=None, rows=None, summary=summary[:500], now=now)
-    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
-        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)
-
-
 def run_load(
     cfg: dict[str, Any],
     *,
@@ -543,7 +533,7 @@ def run_load(
             finish_run(conn, run_id, status=load_status(result), calls=result.calls, rows=sum(result.rows.values()),
                        summary=message, now=result.finished_at)
         except Exception as exc:
-            _finish_quietly(conn, run_id, f"{exc.__class__.__name__}: {exc}", current)
+            finish_run_quietly(conn, run_id, summary=f"{exc.__class__.__name__}: {exc}", now=datetime.now(st.tz))
             if notify:
                 _notify(cfg, discord.PURPOSE_ALERTS, f"[krx] 중단: {exc.__class__.__name__}: {exc}")
             raise

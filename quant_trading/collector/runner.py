@@ -17,7 +17,7 @@ from quant_trading.broker.ratelimit import RateLimiter
 from quant_trading.collector.models import STATUS_ERROR, STATUS_PROTECTED, LogEntry
 from quant_trading.collector.runs import (
     KIND_BACKFILL, KIND_SWEEP, PROVIDER_KIS, STATUS_ABORTED, STATUS_FAILED, STATUS_OK as RUN_OK,
-    STATUS_PARTIAL as RUN_PARTIAL, finish_run, start_run,
+    STATUS_PARTIAL as RUN_PARTIAL, finish_run, finish_run_quietly, start_run,
 )
 from quant_trading.collector.schema import connect
 from quant_trading.collector.store import run_summary, upsert_log
@@ -118,16 +118,6 @@ def run_sweep(
         raise
 
 
-def _finish_quietly(conn, run_id: str | None, status: str, summary: str, tz) -> None:
-    """예외 경로의 종료 기록 시도 - 실패해도 원래 예외의 전파를 막지 않는다."""
-    if run_id is None or conn is None:
-        return
-    try:
-        finish_run(conn, run_id, status=status, calls=None, rows=None, summary=summary[:500], now=datetime.now(tz))
-    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
-        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)
-
-
 def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_only, mode) -> SweepResult:
     # 사이렌 기준값은 순회 전에 읽는다 (설정 누락을 몇 시간짜리 스윕이 끝난 뒤가 아니라 시작 시점에 드러낸다)
     protected_ratio = float(require(cfg, "alerts", "protected_ratio"))
@@ -188,10 +178,11 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_on
             calls=sum(o.pages for o in result.outcomes), rows=result.rows, summary=message, now=result.finished_at)
     except SweepAborted as exc:
         # 시각 안전장치·연속 date_mismatch 중단 = aborted (예외 = failed)
-        _finish_quietly(conn, run_id, STATUS_ABORTED, str(exc), tz)
+        finish_run_quietly(conn, run_id, status=STATUS_ABORTED, summary=str(exc), now=datetime.now(tz))
         raise
     except Exception as exc:
-        _finish_quietly(conn, run_id, STATUS_FAILED, f"{exc.__class__.__name__}: {exc}", tz)
+        finish_run_quietly(conn, run_id, status=STATUS_FAILED, summary=f"{exc.__class__.__name__}: {exc}",
+                           now=datetime.now(tz))
         raise
     finally:
         conn.close()
