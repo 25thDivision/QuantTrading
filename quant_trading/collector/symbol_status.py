@@ -19,10 +19,9 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
-from zoneinfo import ZoneInfo
 
 from quant_trading.collector.symbols import PARSER_VERSION, MasterRecord, SymbolLoadResult, load_symbols
-from quant_trading.config import require
+from quant_trading.config import collector_market, market_tz, require
 
 log = logging.getLogger(__name__)
 
@@ -237,12 +236,13 @@ def _run_snapshot(
     from quant_trading.collector.schema import connect
     from quant_trading.notify import discord
 
-    tz = ZoneInfo(str(require(cfg, "markets", "kospi", "timezone")))
+    tz = market_tz(cfg, collector_market(cfg))
     now = now.astimezone(tz) if now else datetime.now(tz)
     date = snapshot_date or now.date().isoformat()
     run_id = f"{now:%Y%m%dT%H%M%S}-{os.getpid()}"
     loaded = load_symbols(cfg, downloader=downloader, archive=(date, kind))
-    conn = connect(str(require(cfg, "collector", "db_path")))
+    conn = connect(str(require(cfg, "collector", "db_path")),
+                   busy_timeout_sec=float(require(cfg, "collector", "db_busy_timeout_sec")))
     try:
         summary = snapshot_from_loaded(conn, loaded, kind, snapshot_date=date, now=now, run_id=run_id)
     finally:

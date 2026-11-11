@@ -109,7 +109,7 @@ def test_abort_path_sends_alert_then_reraises(cfg, webhooks, monkeypatch):
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(runner.discord, "send", lambda message, cfg_, *, purpose, session=None: sent.append((purpose, message)) or True)
     monkeypatch.setattr(runner, "KisQuoteClient", lambda cfg_, env, limiter: object())
-    monkeypatch.setattr(runner, "connect", lambda path: _DummyConn())
+    monkeypatch.setattr(runner, "connect", lambda path, **kwargs: _DummyConn())
 
     def failing_load(cfg_, **kwargs):
         raise SymbolSourceError("캐시도 없음")
@@ -124,7 +124,7 @@ def test_abort_path_respects_no_notify(cfg, webhooks, monkeypatch):
     sent: list[tuple[str, str]] = []
     monkeypatch.setattr(runner.discord, "send", lambda message, cfg_, *, purpose, session=None: sent.append((purpose, message)) or True)
     monkeypatch.setattr(runner, "KisQuoteClient", lambda cfg_, env, limiter: object())
-    monkeypatch.setattr(runner, "connect", lambda path: _DummyConn())
+    monkeypatch.setattr(runner, "connect", lambda path, **kwargs: _DummyConn())
     monkeypatch.setattr(runner, "load_symbols", lambda cfg_, **kwargs: (_ for _ in ()).throw(SymbolSourceError("x")))
     with pytest.raises(SymbolSourceError):
         runner.run_sweep(cfg, env="paper", notify=False)

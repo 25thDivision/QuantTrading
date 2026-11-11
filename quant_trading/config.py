@@ -2,12 +2,15 @@
 
 모든 수치 파라미터는 config/ 파일로 관리한다 (CLAUDE.md PART D, DECISIONS.md 원칙 4).
 .env 는 KEY=VALUE 형식이며 '#' 이후는 주석으로 버린다. 이미 존재하는 환경변수는 덮어쓰지 않는다.
+시장 코드는 config(collector.market·krx.markets)에서 받고 markets.kospi 를 코드에 직접 쓰지 않는다
+(결정 14 수집기 공통 구조).
 """
 from __future__ import annotations
 
 import os
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import yaml
 
@@ -69,3 +72,21 @@ def require(cfg: dict[str, Any], *keys: str) -> Any:
             raise ConfigError("설정 키 누락: " + ".".join(keys))
         node = node[key]
     return node
+
+
+def market_tz(cfg: dict[str, Any], code: str) -> ZoneInfo:
+    """시장 코드의 시간대 (config markets.<코드>.timezone). 키가 없으면 ConfigError."""
+    return ZoneInfo(str(require(cfg, "markets", code, "timezone")))
+
+
+def collector_market(cfg: dict[str, Any]) -> str:
+    """한국 전용 수집기(스윕·스냅샷·휴장일)가 쓰는 시장 코드 (config collector.market)."""
+    return str(require(cfg, "collector", "market"))
+
+
+def krx_markets(cfg: dict[str, Any]) -> list[str]:
+    """KRX 적재기가 다루는 거래 세그먼트 목록 (config krx.markets). 비어 있거나 목록이 아니면 ConfigError."""
+    value = require(cfg, "krx", "markets")
+    if not isinstance(value, list) or not value:
+        raise ConfigError("설정 krx.markets 는 비어 있지 않은 목록이어야 합니다: " + repr(value))
+    return [str(v) for v in value]

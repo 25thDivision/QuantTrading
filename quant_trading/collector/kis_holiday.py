@@ -31,7 +31,7 @@ from quant_trading.collector import krx_store
 from quant_trading.collector.dates import from_api_date, normalize_date, to_api_date
 from quant_trading.collector.kis_probe import rows_of
 from quant_trading.collector.schema import connect
-from quant_trading.config import ConfigError, require
+from quant_trading.config import ConfigError, collector_market, market_tz, require
 
 log = logging.getLogger(__name__)
 
@@ -52,6 +52,7 @@ class HolidaySettings:
     paging: str
     tz: ZoneInfo
     db_path: str
+    db_busy_timeout_sec: float
 
 
 def settings(cfg: dict[str, Any]) -> HolidaySettings:
@@ -66,8 +67,9 @@ def settings(cfg: dict[str, Any]) -> HolidaySettings:
         run_once_per_day=bool(require(holiday, "run_once_per_day")),
         max_pages=int(require(holiday, "max_pages")),
         paging=paging,
-        tz=ZoneInfo(str(require(cfg, "markets", "kospi", "timezone"))),
+        tz=market_tz(cfg, collector_market(cfg)),
         db_path=str(require(cfg, "collector", "db_path")),
+        db_busy_timeout_sec=float(require(cfg, "collector", "db_busy_timeout_sec")),
     )
 
 
@@ -380,7 +382,7 @@ def run_holiday(
     base = normalize_date(base_date) or today
     db_path = st.db_path
     if dry_run:
-        conn = connect(db_path)                      # DB 파일은 생길 수 있으나 행은 쓰지 않는다
+        conn = connect(db_path, busy_timeout_sec=st.db_busy_timeout_sec)   # DB 파일은 생길 수 있으나 행은 쓰지 않는다
         try:
             already = collected_today(conn, today)
         finally:
@@ -393,7 +395,8 @@ def run_holiday(
         kis_client = client or KisQuoteClient(cfg, env, RateLimiter(float(require(cfg, "collector", "rate_per_sec", env))))
         conn = None
         try:
-            conn = connect(db_path)                  # 스키마 불일치(SchemaMismatchError)도 아래 사이렌 경로를 탄다
+            # 스키마 불일치(SchemaMismatchError)도 아래 사이렌 경로를 탄다
+            conn = connect(db_path, busy_timeout_sec=st.db_busy_timeout_sec)
             result = collect(cfg, kis_client, conn, env=env, base_date=base, now=current, run_id=run_id, force=force,
                              clock=clock)
         except Exception as exc:

@@ -169,14 +169,15 @@ def check_schema(conn: sqlite3.Connection) -> None:
             + "\n해당 테이블을 삭제 후 재실행하십시오 (마이그레이션 없음 - 결정 12 보완 공통 전제)")
 
 
-def connect(db_path: str | Path) -> sqlite3.Connection:
+def connect(db_path: str | Path, *, busy_timeout_sec: float = 60) -> sqlite3.Connection:
     """DB 를 열고(WAL 모드) 스키마를 보장한다. 부모 디렉터리는 생성한다.
 
     옛 형태 테이블이 남아 있으면 조용히 ALTER 하지 않고 SchemaMismatchError 로 중단한다 (결정 12 보완 공통 전제).
+    busy_timeout_sec 은 config collector.db_busy_timeout_sec (기본 60). HTTP 호출은 트랜잭션 밖, 쓰기는 짧게 - 결정 14.
     """
     path = resolve_path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
+    conn = sqlite3.connect(str(path), timeout=busy_timeout_sec)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")

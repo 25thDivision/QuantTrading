@@ -34,7 +34,7 @@ from quant_trading.collector.krx_client import (
 )
 from quant_trading.collector.krx_probe import KIND_ETF, KIND_INDEX, KIND_ISSUE, KIND_STOCK, service_kind
 from quant_trading.collector.krx_rows import ParseError, convert_rows, is_blank_etf_row
-from quant_trading.config import require
+from quant_trading.config import krx_markets, market_tz, require
 
 log = logging.getLogger(__name__)
 
@@ -76,11 +76,14 @@ class LoadSettings:
     issue_on_new_symbol: bool
     issue_forward_daily: bool
     tz: ZoneInfo
+    markets: tuple[str, ...]                 # 이 적재기가 다루는 세그먼트 (config krx.markets, 시간대는 첫 항목)
+    db_busy_timeout_sec: float
 
 
 def settings(cfg: dict[str, Any], *, budget: int | None = None) -> LoadSettings:
     krx = require(cfg, "krx")
     issue = require(krx, "issue_info")
+    markets = krx_markets(cfg)
     return LoadSettings(
         history_start=str(normalize_date(str(require(krx, "history_start")))),
         history_order=str(require(krx, "history_order")),
@@ -89,7 +92,9 @@ def settings(cfg: dict[str, Any], *, budget: int | None = None) -> LoadSettings:
         max_consecutive_skips=int(require(krx, "max_consecutive_skips")),
         issue_on_new_symbol=bool(require(issue, "on_new_symbol")),
         issue_forward_daily=str(require(issue, "forward")) == "daily",
-        tz=ZoneInfo(str(require(cfg, "markets", "kospi", "timezone"))),
+        tz=market_tz(cfg, markets[0]),
+        markets=tuple(markets),
+        db_busy_timeout_sec=float(require(cfg, "collector", "db_busy_timeout_sec")),
     )
 
 
@@ -475,7 +480,7 @@ def run_load(
     until_iso = normalize_date(until) or _iso(today - timedelta(days=1))
     db_path = str(require(cfg, "collector", "db_path"))
     if dry_run:
-        conn = connect(db_path)
+        conn = connect(db_path, busy_timeout_sec=st.db_busy_timeout_sec)
         try:
             plans = plan_dates(conn, st, since=since_iso, until=until_iso, today=today.isoformat())
             calls_today = store.calls_on(conn, today.isoformat())
@@ -489,7 +494,8 @@ def run_load(
         krx_client = client or KrxClient(cfg)
         conn = None
         try:
-            conn = connect(db_path)         # 스키마 불일치(SchemaMismatchError)도 아래 사이렌 경로를 탄다
+            # 스키마 불일치(SchemaMismatchError)도 아래 사이렌 경로를 탄다
+            conn = connect(db_path, busy_timeout_sec=st.db_busy_timeout_sec)
             result = load(cfg, krx_client, conn, now=now, since=since_iso, until=until_iso, budget=budget)
         except Exception as exc:
             if notify:

@@ -273,7 +273,7 @@ def test_alert_table_skip_parse_error_and_abort():
 def test_run_load_schema_mismatch_sends_abort_siren_and_reraises(cfg, monkeypatch):
     sent = capture(monkeypatch)
 
-    def boom(_path):
+    def boom(_path, **kwargs):
         raise SchemaMismatchError("krx_call_log 테이블 형태가 다릅니다 - 삭제 후 재실행")
     monkeypatch.setattr("quant_trading.collector.schema.connect", boom)
 

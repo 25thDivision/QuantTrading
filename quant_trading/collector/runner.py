@@ -10,7 +10,6 @@ import logging
 import os
 from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from quant_trading.broker.kis_quote import KisQuoteClient
 from quant_trading.broker.ratelimit import RateLimiter
@@ -20,7 +19,7 @@ from quant_trading.collector.store import run_summary, upsert_log
 from quant_trading.collector.symbol_status import KIND_POST_CLOSE, snapshot_from_loaded
 from quant_trading.collector.sweep import SweepResult, backfill, format_reasons, format_summary, sweep
 from quant_trading.collector.symbols import SymbolLoadResult, describe, load_symbols
-from quant_trading.config import require
+from quant_trading.config import collector_market, market_tz, require
 from quant_trading.notify import discord
 
 log = logging.getLogger(__name__)
@@ -107,13 +106,13 @@ def _run(cfg, ccfg, *, env, symbols, limit, expected_date, notify, now, retry_on
     protected_count = int(require(cfg, "alerts", "protected_count"))
     limiter = RateLimiter(float(require(ccfg, "rate_per_sec", env)))
     client = KisQuoteClient(cfg, env, limiter)
-    conn = connect(str(ccfg["db_path"]))
+    conn = connect(str(ccfg["db_path"]), busy_timeout_sec=float(require(ccfg, "db_busy_timeout_sec")))
     try:
         loaded: SymbolLoadResult | None = None
         snapshot_alert: str | None = None
         if symbols is None:
             # 당일 스윕만 받은 zip 원본을 보관한다 (소급 모드는 보관하지 않는다 - 보완 46)
-            snap_now = datetime.now(ZoneInfo(str(require(cfg, "markets", "kospi", "timezone"))))
+            snap_now = datetime.now(market_tz(cfg, collector_market(cfg)))
             archive = (snap_now.date().isoformat(), KIND_POST_CLOSE) if mode != "backfill" else None
             loaded = load_symbols(cfg, archive=archive)
             symbols = loaded.symbols

@@ -12,6 +12,9 @@ common:             # 시장 무관 공식·규칙
 markets:
   kospi:            # 코스피 인스턴스 파라미터 (2026 변동성 국면 보정값)
     timezone: Asia/Seoul
+    mic: XKRX       # ISO 10383 - 외부 데이터 조인용 메타 (결정 15 시장 코드 체계, 지시 문안 5). market 값으로는 쓰지 않는다
+    country: KR
+    currency: KRW
     sessions:       # 세션 테이블 - 1급 구조 (결정 9). 전부 정의하되 거래 활성은 tradable로 통제. 2026-09-14 제도 개편 반영 (ARCHITECTURE.md 5절)
       - {name: auction_open,  span: "08:30-09:00", kind: auction,    tradable: false}
       - {name: continuous,    span: "09:00-15:20", kind: continuous, tradable: true}   # v1 유일 거래 세션
@@ -22,6 +25,11 @@ markets:
     day:  {stop: {mode: vol_linked, mult: 0.5, clamp: [-0.03, -0.06]}, max_positions: 1, price_cap: 200_000}
     swing: {stop: -0.15, positions: 7, price_cap: 160_000, leverage_slot: {max_ratio: 0.5, stop: -0.20}}
     universe:       # 미확정 - DECISIONS.md 11절 참조
+  kosdaq:           # 연구용 수집만 (거래 금지 - 결정 2). 세션 테이블 없음, 수집 전용 메타 (결정 15, 지시 문안 5)
+    timezone: Asia/Seoul
+    mic: XKOS
+    country: KR
+    currency: KRW
   us:               # 미국 인스턴스 - 독자 백테스트로 별도 확정 (미정)
     timezone: America/New_York   # 세션은 현지 시간대로 정의, 서머타임은 라이브러리가 처리
 calendar:           # 미확정 - DECISIONS.md 11절 참조 (시장 캘린더 - 휴장일·단축일·변경일, 소스 미정)
@@ -33,7 +41,7 @@ personal_bot:       # 개인 자동화 봇 (결정 8·9)
   buffer_minutes: 30
 
 collector:          # 분봉 스윕 수집기 (결정 11) - 마감 후 REST 일괄 스윕
-  market: kospi
+  market: kospi                 # 한국 전용 수집기(스윕·스냅샷·휴장일)가 시간대·세션·메타를 읽는 markets.<코드> (결정 14 시장 인자, 지시 문안 5)
   kind: intraday_1m
   sweep_after: "20:30"          # k12 타이머 실행 시각 (거래소 현지시각). deploy/systemd/collector.timer 의 OnCalendar 와 반드시 일치시킬 것
   sessions: [continuous, auction_close, after_fixed, aftermarket]   # 수집 창 = 이 세션들의 최소 시작(09:00) ~ 최대 종료(20:00). 시가 단일가(08:30~09:00)는 분봉 없음
@@ -52,6 +60,7 @@ collector:          # 분봉 스윕 수집기 (결정 11) - 마감 후 REST 일�
     page_size: 120
     fake_tick: ""               # FID_FAKE_TICK_INCU_YN - 공백 필수 (공식 문서)
   db_path: data/quant_trading.sqlite3   # 저장소 루트 기준 상대 경로 (data/ 는 git 제외)
+  db_busy_timeout_sec: 60       # SQLite busy timeout (결정 14 DB 쓰기 규칙, 지시 문안 5). 종전 미지정 = sqlite3 기본 5초
   max_consecutive_date_mismatch: 5   # 순회 중 date_mismatch 가 이만큼 연속되면 "수집 창 닫힘"(API 거래일 변경)으로 판정하고 즉시 중단
   max_pages_margin: 2           # 최대 페이지 = ceil(수집 창 분 수 / page_size) + margin
   probe_symbols: 5              # 거래일 판별에 시도할 선두 종목 수
@@ -112,6 +121,7 @@ krx:                # KRX 공식 Open API (결정 12) - 일 단위 시장 데이
   history_order: desc           # 과거 적재 순서 (desc = 최근부터). 정규 배치와 과거 적재는 같은 --load 가 예산 안에서 이어간다
   empty_finalize_after_days: 7  # 빈 응답 날짜를 휴장일로 확정하는 경과일. 그 전엔 pending 으로 두고 다음 실행에서 재시도 (갱신 지연 오판 방지)
   max_consecutive_skips: 5      # 일시 오류·응답 형식 오류로 연속 건너뛴 날짜가 이 수에 닿으면 "KRX 장애 추정" 으로 중단 (결정 12 보완 41). 인증·한도 오류는 즉시 중단
+  markets: [kospi, kosdaq]      # 이 적재기가 다루는 세그먼트. 시간대는 첫 항목 기준, runs.market 에 'kospi,kosdaq' 으로 기록 (결정 14, 지시 문안 5)
   daily_run_at: "08:15"         # k12 타이머 시각 (전일분 갱신 08:00 이후). deploy/systemd/krx-daily.timer 의 OnCalendar 와 일치시킬 것
   issue_info:                   # 종목기본정보 호출 조건 (결정 12)
     history: monthly_first_trading_day   # 과거 적재: 달에 스냅샷이 없으면 처음 만나는 거래일에 호출 (desc 순서에서는 그 달의 마지막 거래일로 근사)
