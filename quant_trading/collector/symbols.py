@@ -16,7 +16,9 @@ import hashlib
 import io
 import logging
 import os
+import re
 import zipfile
+from datetime import date
 from email.utils import parsedate_to_datetime
 from collections import Counter
 from dataclasses import dataclass, field
@@ -59,6 +61,11 @@ GROUP_STOCK = "ST"      # 주권
 GROUP_ETF = "EF"        # ETF
 PREF_COMMON = "0"       # 우선주구분코드 0: 해당없음(보통주)
 PARSER_VERSION = "1"    # 파싱 규칙 버전 (symbol_status_snapshot 헤더에 기록 - 보완 43)
+
+# 보관 zip 파일명 <YYYY-MM-DD>_<kind>.zip 의 종류 (symbol_status.KINDS 와 같은 값이지만 순환 import 를 피해 여기 둔다)
+KIND_PRE_OPEN, KIND_POST_CLOSE = "pre_open", "post_close"
+KIND_PRIORITY = {KIND_POST_CLOSE: 0, KIND_PRE_OPEN: 1}   # 같은 날 폴백 선택 시 post_close 가 앞 (결정 14)
+ARCHIVE_NAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(pre_open|post_close)\.zip$")
 
 
 class SymbolSourceError(RuntimeError):
@@ -211,12 +218,59 @@ def _write_atomic(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
+def parse_archive_name(name: str) -> tuple[date, str] | None:
+    """보관 zip 파일명 <YYYY-MM-DD>_<kind>.zip 을 (날짜, 종류) 로 해석한다. 형식이 아니면 None."""
+    matched = ARCHIVE_NAME_RE.match(name)
+    if matched is None:
+        return None
+    try:
+        return date.fromisoformat(matched.group(1)), matched.group(2)
+    except ValueError:      # 2026-13-01 처럼 형식은 맞지만 달력에 없는 날짜
+        return None
+
+
 def latest_archive(master_dir: Path) -> Path | None:
-    """보관 폴더의 *.zip 중 파일명 정렬 마지막 (다운로드 실패 시 폴백 선택 규칙 - 보완 46)."""
+    """보관 폴더의 *.zip 중 날짜가 가장 최신인 것, 같은 날이면 post_close (다운로드 실패 시 폴백 - 결정 14).
+
+    파일명 정렬은 같은 날 pre_open 을 고르고, mtime 은 복사·rsync 로 흔들리므로 둘 다 쓰지 않는다.
+    <날짜>_<종류>.zip 형식이 아닌 zip 은 무시하고 파일명을 모아 경고 1줄만 남긴다.
+    """
     if not master_dir.is_dir():
         return None
-    archives = sorted(master_dir.glob("*.zip"), key=lambda p: p.name)
-    return archives[-1] if archives else None
+    candidates: list[tuple[date, str, Path]] = []
+    ignored: list[str] = []
+    for path in sorted(master_dir.glob("*.zip")):
+        parsed = parse_archive_name(path.name)
+        if parsed is None:
+            ignored.append(path.name)
+            continue
+        candidates.append((parsed[0], parsed[1], path))
+    if ignored:
+        log.warning("보관 폴더에서 형식이 아닌 zip %d개 무시: %s", len(ignored), ", ".join(ignored))
+    if not candidates:
+        return None
+    best = max(candidates, key=lambda item: (item[0], -KIND_PRIORITY[item[1]]))
+    return best[2]
+
+
+def cleanup_tmp_archives(master_dir: Path) -> int:
+    """보관 폴더 바로 아래의 .zip.tmp 잔여 파일(중단된 원자적 저장의 흔적)을 지우고 지운 건수를 돌려준다.
+
+    폴더가 없으면 아무것도 하지 않는다. 삭제 실패(OSError)는 경고 1줄만 남기고 계속한다 - 수집을 막지 않는다.
+    """
+    if not master_dir.is_dir():
+        return 0
+    removed = 0
+    for path in sorted(master_dir.glob("*.zip.tmp")):
+        try:
+            path.unlink()
+        except OSError as exc:
+            log.warning("보관 폴더의 .zip.tmp 삭제 실패: %s: %s", path.name, exc)
+            continue
+        removed += 1
+    if removed:
+        log.info("보관 폴더의 .zip.tmp 잔여 파일 %d개 삭제", removed)
+    return removed
 
 
 def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float], bytes] | None = None,
@@ -225,11 +279,14 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
 
     archive=(날짜, 종류) 를 주면 받은 zip 원본을 symbol_master_dir/<날짜>_<종류>.zip 에 그대로 저장한다
     (소급 모드 등 archive=None 이면 보관하지 않는다). 보관 실패는 적재를 막지 않고 save_error 로 남긴다.
+    폴백은 (날짜 내림차순, 같은 날이면 post_close 우선) 규칙이고, 폴백 zip 이 손상되면 SymbolSourceError 로 중단한다
+    (결정 14). 시작할 때 보관 폴더의 .zip.tmp 잔여 파일을 지운다.
     """
     src = require(cfg, "collector", "symbol_source")
     if str(src.get("provider")) != "kis_master":
         raise ConfigError(f"지원하지 않는 symbol_source.provider: {src.get('provider')!r}")
     master_dir = resolve_path(str(require(cfg, "collector", "symbol_master_dir")))
+    cleanup_tmp_archives(master_dir)      # 중단된 저장의 흔적은 다운로드 시도 전에 지운다
     member = str(src["member"])
     groups = [str(g) for g in src["groups"]]
     common_only = bool(src["common_only"])
@@ -252,7 +309,11 @@ def load_symbols(cfg: dict[str, Any], *, downloader: Callable[[str, str, float],
                 f"종목정보파일 다운로드 실패: {exc.__class__.__name__}: {exc} - 보관 zip 도 없음({master_dir})") from exc
         warning = f"종목정보파일 다운로드 실패, 직전 캐시 사용({fallback.name}): {exc.__class__.__name__}: {exc}"
         log.warning(warning)
-        data = extract_member(fallback.read_bytes(), member)
+        try:
+            data = extract_member(fallback.read_bytes(), member)
+        except (zipfile.BadZipFile, OSError) as read_exc:   # 손상·읽기 실패는 다음 zip 으로 넘어가지 않고 중단 (결정 14)
+            raise SymbolSourceError(
+                f"보관 zip 손상 또는 읽기 실패: {fallback.name}: {read_exc.__class__.__name__}: {read_exc}") from read_exc
         records = parse_master(data)
         source = "cache"
         is_fallback = True

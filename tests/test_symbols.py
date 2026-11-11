@@ -93,13 +93,18 @@ def test_parser_version_and_repo_relative(tmp_path):
     assert repo_relative(tmp_path / "x.zip") == str(tmp_path / "x.zip")
 
 
-def test_latest_archive_picks_last_name(tmp_path):
+def test_latest_archive_picks_newest_date_then_post_close(tmp_path):
+    # 결정 14: 파일명 정렬(mtime 아님) 대신 날짜 내림차순, 같은 날이면 post_close 우선
     assert latest_archive(tmp_path / "absent") is None
     assert latest_archive(tmp_path) is None
     (tmp_path / "2026-10-05_post_close.zip").write_bytes(b"a")
     (tmp_path / "2026-10-06_pre_open.zip").write_bytes(b"b")
+    (tmp_path / "2026-10-06_post_close.zip").write_bytes(b"c")
     (tmp_path / "notes.txt").write_text("x")
-    assert latest_archive(tmp_path) == tmp_path / "2026-10-06_pre_open.zip"
+    assert latest_archive(tmp_path) == tmp_path / "2026-10-06_post_close.zip"
+
+    (tmp_path / "2026-10-06_post_close.zip").unlink()
+    assert latest_archive(tmp_path) == tmp_path / "2026-10-06_pre_open.zip"     # 같은 날이면 남은 종류
 
 
 @pytest.fixture
