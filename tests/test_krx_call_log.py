@@ -1,5 +1,8 @@
 """krx_call_log 기본키(attempt)·run_id, HTTP 시도별 장부 1행, security_group 개명, 옛 형태 테이블 감지.
 
+지시 문안 5 커밋 단위 3(실행 대장)에서 바뀐 점은 둘이다.
+1) RUN_ID_RE - 실행 대장(결정 14)의 run_id 형식이 YYYYMMDDTHHMMSS-<kind>-<host>-<pid> 로 바뀌었다 (원본은 -<pid>).
+
 스텁 세션·스텁 클라이언트만 쓴다 (실호출 없음). DB 는 tmp_path 의 임시 파일이다.
 """
 from __future__ import annotations
@@ -24,7 +27,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "krx"
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 10, 6, 8, 15, tzinfo=KST)          # 화요일 08:15, 어제 = 2026-10-05 (월)
 TEST_KEY = "TESTKEY-0123456789"
-RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-\d+$")
+RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-krx_load-.+-\d+$")
 
 
 def fixture_text(name: str) -> str:
@@ -100,7 +103,7 @@ def make_client(cfg, answers: list) -> KrxClient:
     return KrxClient(cfg, CountingLimiter(), session=FakeSession(answers), sleep=lambda _sec: None)
 
 
-def entry(called_at: str, service: str, bas_dd: str, attempt: int, *, run_id: str = "20261109T221800-1234",
+def entry(called_at: str, service: str, bas_dd: str, attempt: int, *, run_id: str = "20261109T221800-krx_load-host-1234",
           http_status: int | None = 200, rows: int | None = 1, duration_sec: float | None = 0.1, outcome: str = "ok",
           error_text: str | None = None) -> store.CallLogEntry:
     return store.CallLogEntry(called_at, service, bas_dd, attempt, run_id, http_status, rows, duration_sec, outcome, error_text)
@@ -318,4 +321,3 @@ def test_old_collector_log_without_index_column_is_detected_not_operational_erro
     with pytest.raises(SchemaMismatchError) as excinfo:
         connect(path)
     assert "collector_log" in str(excinfo.value) and "삭제 후 재실행" in str(excinfo.value)
-

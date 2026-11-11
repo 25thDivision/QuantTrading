@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +29,7 @@ from quant_trading.collector.models import (
     KIND_INTRADAY_1M, STATUS_ERROR, STATUS_NO_TRADE, STATUS_OK, STATUS_PARTIAL, STATUS_PROTECTED, Candle, LogEntry,
     SymbolOutcome,
 )
+from quant_trading.collector.runs import KIND_BACKFILL, KIND_SWEEP, host_name, new_run_id
 from quant_trading.collector.sessions import Session, load_sessions, session_for, sweep_window
 from quant_trading.collector.store import non_ok_symbols, ok_symbols, upsert_candles, upsert_log
 from quant_trading.config import require
@@ -283,12 +285,16 @@ def sweep(
     expected_date: str | None = None,
     now: datetime | None = None,
     retry_only: bool = True,
+    run_id: str | None = None,
 ) -> SweepResult:
-    """당일분봉 스윕. expected_date 는 ISO 또는 YYYYMMDD (정규화). retry_only=False 가 --all."""
+    """당일분봉 스윕. expected_date 는 ISO 또는 YYYYMMDD (정규화). retry_only=False 가 --all.
+
+    run_id 는 실행 대장의 값을 받는다 (runner 경유). 직접 호출(None)이면 new_run_id 로 만든다.
+    """
     ctx = _context(cfg, "api")
     now = now.astimezone(ctx.tz) if now else datetime.now(ctx.tz)
     expected = normalize_date(expected_date)
-    run_id = f"{now.strftime('%Y%m%dT%H%M%S')}-{env}"
+    run_id = run_id or new_run_id(KIND_SWEEP, now, host_name(), os.getpid())
     if not symbols:
         raise SweepAborted("종목 목록이 비어 있습니다")
 
@@ -344,11 +350,13 @@ def backfill(
     now: datetime | None = None,
     retry_only: bool = True,
     include_ledger: bool = False,
+    run_id: str | None = None,
 ) -> SweepResult:
     """주식일별분봉조회로 지정일(ISO/YYYYMMDD) 결손 종목을 보충. 성공은 partial(15:20~15:29 미제공) 로 기록.
 
     include_ledger=True (symbols 가 종목정보파일 전체일 때 호출자가 지정) 이고 선택 재시도면, 그 날짜 장부의 ok 아닌
     종목 중 symbols 에 없는 것(수집일 이후 파일에서 빠진 종목)도 대상에 더한다. 종목명이 없으므로 코드만으로 처리한다.
+    run_id 는 실행 대장의 값을 받는다 (runner 경유). 직접 호출(None)이면 new_run_id 로 만든다.
     """
     ctx = _context(cfg, "backfill_api")
     now = now.astimezone(ctx.tz) if now else datetime.now(ctx.tz)
@@ -358,7 +366,7 @@ def backfill(
     assert trade_date is not None
     if not symbols:
         raise SweepAborted("종목 목록이 비어 있습니다")
-    run_id = f"{now.strftime('%Y%m%dT%H%M%S')}-{env}-backfill"
+    run_id = run_id or new_run_id(KIND_BACKFILL, now, host_name(), os.getpid())
 
     # 수집 창이 살아 있는 날짜(API 의 최근 거래일)면 당일분봉 우선 - 소급 API 는 15:20~15:29 를 못 주므로 거부
     live_date = resolve_trade_date(client, symbols, ctx.end_hhmm, ctx.probe_symbols)

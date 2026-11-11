@@ -11,11 +11,12 @@
   (#alerts 1줄). source kis_holiday 행은 UPSERT 로 갱신한다.
 - 응답 원문(행 내용)은 저장하지 않는다 - 로그에 행 수·기간만 남긴다. 키·토큰 값은 어디에도 출력하지 않는다.
 - 사이렌(#alerts)은 정상 완료("오늘 이미 수집됨" 포함) 외 모든 종료에 보낸다. 요약은 #collector 에 항상 1줄.
+- 실행 대장(결정 14): DB 연결 직후·첫 HTTP 전에 start_run(kind=holiday, provider=kis, market=HOLIDAY_MARKET,
+  env=env)을 넣고 요약 뒤 finish_run 으로 결과를 갱신한다. dry-run 은 대장에 아무것도 쓰지 않는다.
 """
 from __future__ import annotations
 
 import logging
-import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,6 +31,9 @@ from quant_trading.broker.ratelimit import RateLimiter
 from quant_trading.collector import krx_store
 from quant_trading.collector.dates import from_api_date, normalize_date, to_api_date
 from quant_trading.collector.kis_probe import rows_of
+from quant_trading.collector.runs import (
+    KIND_HOLIDAY, PROVIDER_KIS, STATUS_FAILED, STATUS_OK, STATUS_PARTIAL, finish_run, start_run,
+)
 from quant_trading.collector.schema import connect
 from quant_trading.config import ConfigError, collector_market, market_tz, require
 
@@ -39,6 +43,7 @@ SERVICE_HOLIDAY = "holiday"
 OUTCOME_OK, OUTCOME_ERROR, OUTCOME_AUTH, OUTCOME_TRANSIENT = "ok", "error", "auth_error", "transient"
 PAGING_CTX_NK = "ctx_nk_to_bass_dt"
 LABEL = "kis_holiday"
+HOLIDAY_MARKET = "kospi,kosdaq"             # KRX 전체 캘린더라 시장 코드 2개를 쉼표로 잇는다 (지시 문안 5 2-4 고정값)
 ALERT_MISMATCH_LIMIT = 5                    # 사이렌 1줄에 나열하는 불일치 건수 상한
 ERROR_TEXT_LIMIT = 200
 
@@ -326,6 +331,20 @@ def format_summary(result: HolidayResult) -> str:
     return text
 
 
+def holiday_status(result: HolidayResult) -> str:
+    """실행 대장 status 매핑 (결정 14) - "오늘 이미 수집됨" 도 ok (호출 0).
+
+    오류 응답·토큰·네트워크 = failed / 불일치·비전진만 있으면 partial / 그 밖은 ok. 예외는 run_holiday 가 failed 로 남긴다.
+    """
+    if result.already_done:
+        return STATUS_OK
+    if result.error:
+        return STATUS_FAILED
+    if result.mismatches or result.non_advancing:
+        return STATUS_PARTIAL
+    return STATUS_OK
+
+
 def alert_messages(result: HolidayResult) -> list[str]:
     """#alerts 사이렌 문장들 - 정상 완료(불일치·비전진 없음)면 빈 리스트."""
     items: list[str] = []
@@ -390,16 +409,22 @@ def run_holiday(
         emit(format_dry_run(cfg, env=env, base_date=base, today=today, already=already))
         return None
     notify = notify and bool(require(cfg, "collector", "notify", "discord"))
-    run_id = f"{current:%Y%m%dT%H%M%S}-{os.getpid()}"
     with env_lock(cfg, env, wait=wait):
         kis_client = client or KisQuoteClient(cfg, env, RateLimiter(float(require(cfg, "collector", "rate_per_sec", env))))
         conn = None
+        run_id: str | None = None
         try:
             # 스키마 불일치(SchemaMismatchError)도 아래 사이렌 경로를 탄다
             conn = connect(db_path, busy_timeout_sec=st.db_busy_timeout_sec)
+            # 실행 대장 등록은 첫 HTTP 전 (결정 14). 휴장일 캘린더는 KRX 전체라 market 은 고정값이다
+            run_id = start_run(conn, kind=KIND_HOLIDAY, provider=PROVIDER_KIS, market=HOLIDAY_MARKET, env=env, now=current)
             result = collect(cfg, kis_client, conn, env=env, base_date=base, now=current, run_id=run_id, force=force,
                              clock=clock)
+            message = format_summary(result)
+            finish_run(conn, run_id, status=holiday_status(result), calls=result.pages,
+                       rows=result.inserted + result.updated, summary=message, now=result.finished_at)
         except Exception as exc:
+            _finish_quietly(conn, run_id, f"{exc.__class__.__name__}: {exc}", current)
             message = f"[{LABEL}] 중단: {exc.__class__.__name__}: {exc}"
             log.error(message)
             if notify:
@@ -408,7 +433,6 @@ def run_holiday(
         finally:
             if conn is not None:
                 conn.close()
-    message = format_summary(result)
     log.info(message)
     emit(message)
     if notify:
@@ -425,3 +449,13 @@ def _notify(cfg: dict[str, Any], purpose: str, message: str) -> None:
         discord.send(message, cfg, purpose=purpose)
     except Exception as exc:  # noqa: BLE001 - 알림 실패가 수집을 막지 않는다
         log.warning("알림 전송 중 예외(%s): %s", purpose, exc)
+
+
+def _finish_quietly(conn, run_id: str | None, summary: str, now: datetime) -> None:
+    """예외 경로의 종료(failed) 기록 시도 - 실패해도 원래 예외의 전파를 막지 않는다."""
+    if run_id is None or conn is None:
+        return
+    try:
+        finish_run(conn, run_id, status=STATUS_FAILED, calls=None, rows=None, summary=summary[:500], now=now)
+    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
+        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)

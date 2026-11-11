@@ -1,7 +1,14 @@
-"""KRX 상태 주도 적재기 테스트 - 스텁 클라이언트·픽스처, 실호출 없음 (결정 12)."""
+"""KRX 상태 주도 적재기 테스트 - 스텁 클라이언트·픽스처, 실호출 없음 (결정 12).
+
+지시 문안 5 커밋 단위 3(실행 대장)에서 바뀐 점은 셋이다.
+1) same_second_run_ids - 진입점을 같은 초에 두 번 실행하면 실행 대장(결정 14) run_id 기본키가 충돌한다(설계상 의도).
+   테스트는 실행마다 초를 밀어 충돌을 피한다.
+2) 그 밖의 단언·픽스처는 종전과 같다.
+"""
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,6 +19,7 @@ import requests
 
 from quant_trading import config as config_module
 from quant_trading.collector import krx_load, krx_store as store
+from quant_trading.collector import runs as runs_module
 from quant_trading.collector.krx_client import KrxAuthError, KrxResponse, KrxTransientError
 from quant_trading.collector.krx_load import LoadResult, alert_messages, format_summary, load, plan_dates, run_load, settings, weekdays
 from quant_trading.collector.schema import connect
@@ -21,6 +29,15 @@ REPO = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).parent / "fixtures" / "krx"
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 10, 6, 8, 15, tzinfo=KST)          # 화요일 08:15, 어제 = 2026-10-05 (월)
+
+
+@pytest.fixture(autouse=True)
+def same_second_run_ids(monkeypatch):
+    """같은 초 재실행은 run_id 기본키 충돌(설계) - 테스트는 실행마다 초를 밀어 충돌을 피한다."""
+    real = runs_module.new_run_id
+    counter = itertools.count()
+    monkeypatch.setattr(runs_module, "new_run_id",
+                        lambda kind, now, host, pid: real(kind, now + timedelta(seconds=next(counter)), host, pid))
 
 
 def fixture_rows(name: str, bas_dd: str | None = None) -> list[dict]:

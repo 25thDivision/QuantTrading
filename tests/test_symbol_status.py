@@ -1,16 +1,23 @@
-"""종목정보파일 지정내역 플래그 스냅샷 테스트 (결정 12 symbol_status_daily) - 스텁 바이트·스텁 어댑터, 네트워크 없음."""
+"""종목정보파일 지정내역 플래그 스냅샷 테스트 (결정 12 symbol_status_daily) - 스텁 바이트·스텁 어댑터, 네트워크 없음.
+
+지시 문안 5 커밋 단위 3(실행 대장)에서 바뀐 점은
+same_second_run_ids 픽스처 하나다. 한 테스트가 같은 초에 스윕/스냅샷을 두 번 이상 실행하면 실행 대장(결정 14)의
+run_id 기본키가 충돌하므로(설계상 의도) 테스트는 실행마다 초를 밀어 충돌을 피한다. 단언은 원본과 같다.
+"""
 from __future__ import annotations
 
 import importlib.util
 import io
+import itertools
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from quant_trading.collector import runner
+from quant_trading.collector import runs as runs_module
 from quant_trading.collector.schema import connect
 from quant_trading.collector.symbol_status import KIND_POST_CLOSE, KIND_PRE_OPEN, run_snapshot, summarize, upsert_snapshot
 from quant_trading.collector.symbols import MASTER_FIELDS, PART2_LEN, load_symbols, parse_master
@@ -20,6 +27,15 @@ REPO = Path(__file__).resolve().parent.parent
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 10, 6, 8, 50, tzinfo=KST)
 MEMBER = "kospi_code.mst"
+
+
+@pytest.fixture(autouse=True)
+def same_second_run_ids(monkeypatch):
+    """같은 초 재실행은 run_id 기본키 충돌(설계) - 테스트는 실행마다 초를 밀어 충돌을 피한다."""
+    real = runs_module.new_run_id
+    counter = itertools.count()
+    monkeypatch.setattr(runs_module, "new_run_id",
+                        lambda kind, now, host, pid: real(kind, now + timedelta(seconds=next(counter)), host, pid))
 
 
 def make_line(code: str, name: str, group: str, *, pref: str = "0", halted: str = "N", managed: str = "N", liq: str = "N",

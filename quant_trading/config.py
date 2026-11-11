@@ -18,6 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "config.yaml"
 DEFAULT_ENV_PATH = REPO_ROOT / ".env"
 
+_LOADED_CONFIG_PATH: Path | None = None   # load_config 가 마지막으로 읽은 경로 (실행 대장 config_sha256 의 대상)
+
 
 class ConfigError(RuntimeError):
     """설정 누락·형식 오류."""
@@ -47,6 +49,7 @@ def load_env(path: Path | None = None) -> None:
 
 
 def load_config(path: str | Path | None = None, *, env_path: Path | None = None) -> dict[str, Any]:
+    global _LOADED_CONFIG_PATH
     cfg_path = Path(path) if path else DEFAULT_CONFIG_PATH
     if not cfg_path.exists():
         raise ConfigError(f"설정 파일이 없습니다: {cfg_path}")
@@ -54,8 +57,17 @@ def load_config(path: str | Path | None = None, *, env_path: Path | None = None)
         cfg = yaml.safe_load(fh) or {}
     if not isinstance(cfg, dict):
         raise ConfigError(f"설정 최상위는 매핑이어야 합니다: {cfg_path}")
+    _LOADED_CONFIG_PATH = cfg_path
     load_env(env_path)
     return cfg
+
+
+def loaded_config_path() -> Path:
+    """load_config 가 마지막으로 읽은 설정 파일 경로. 한 번도 안 불렸으면 DEFAULT_CONFIG_PATH.
+
+    실행 대장(runs)의 config_sha256 이 "실제로 읽은 파일" 을 해시하도록 하는 근거 (결정 14).
+    """
+    return _LOADED_CONFIG_PATH or DEFAULT_CONFIG_PATH
 
 
 def resolve_path(value: str | Path) -> Path:

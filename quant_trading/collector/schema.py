@@ -1,8 +1,8 @@
 """SQLite 스키마 - 분봉 수집 두 테이블(candles_1m, collector_log)과 종목정보파일 플래그 스냅샷
-(symbol_status_daily·symbol_status_snapshot), 한국투자증권 일 단위 조회 장부(kis_call_log).
+(symbol_status_daily·symbol_status_snapshot), 한국투자증권 일 단위 조회 장부(kis_call_log), 실행 대장(runs).
 KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
 
-설계 근거 (DECISIONS.md 결정 11·12, ARCHITECTURE.md 2절):
+설계 근거 (DECISIONS.md 결정 11·12·14, ARCHITECTURE.md 2절):
 - candles_1m: 원본가 불변 저장. (symbol, ts) 복합 PK 로 재실행 멱등(UPSERT). ts 는 API 분봉 라벨을
   그대로 옮긴 거래소 현지시각이며, session 은 config 세션 테이블에서 파생해 세션 구분을 바로 할 수 있게 한다.
   amount_cum 은 API 가 주는 당일 누적 거래대금 원본이다 (분 거래대금은 읽기 시점에 차분 - 원본 보존 원칙).
@@ -14,6 +14,9 @@ KRX 일 단위 테이블은 krx_schema.py 에서 가져와 같이 만든다.
 - kis_call_log: 한국투자증권 일 단위 조회의 호출 장부 (결정 12 "kis_call_log"). HTTP 요청 1건 = 장부 1행.
   1일 1회 보호(국내휴장일조회)는 이 값의 날짜 부분으로 판정하므로 called_at 은 반드시 Asia/Seoul ISO 초 단위다.
   분봉 스윕 장부(collector_log)와 프로브 모드는 이 장부를 쓰지 않는다.
+- runs: 실행 대장 (결정 14 "실행 대장 runs"). 수집기는 시작 시 running 행을 넣고 종료 시 status 를 갱신하므로
+  프로세스가 죽으면 running 이 남아 "끝나지 않은 실행" 이 보인다. 장부 4종·스냅샷 헤더의 run_id 가 이 표를 가리킨다
+  (외래키는 1-4 재구축 때 일괄). run_id 는 collector.runs.new_run_id 만 만든다.
 """
 from __future__ import annotations
 
@@ -103,7 +106,7 @@ CREATE TABLE IF NOT EXISTS kis_call_log (
     service      TEXT    NOT NULL,   -- holiday (훗날 ksd_rev_split 등)
     bas_dd       TEXT    NOT NULL,   -- 요청 BASS_DT 'YYYY-MM-DD'
     attempt      INTEGER NOT NULL,   -- HTTP 시도 순번 (request_raw 는 재시도 없음 → 1)
-    run_id       TEXT    NOT NULL,   -- 실행 식별자 (YYYYMMDDTHHMMSS-<pid>)
+    run_id       TEXT    NOT NULL,   -- 실행 식별자 (runs.new_run_id: YYYYMMDDTHHMMSS-<kind>-<host>-<pid>)
     env          TEXT    NOT NULL,   -- real | paper
     http_status  INTEGER,            -- 응답을 못 받으면 NULL
     rt_cd        TEXT,
@@ -114,6 +117,25 @@ CREATE TABLE IF NOT EXISTS kis_call_log (
     error_text   TEXT,
     PRIMARY KEY (called_at, service, bas_dd, attempt)
 ) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id         TEXT    PRIMARY KEY,   -- YYYYMMDDTHHMMSS-<kind>-<host>-<pid> (runs.new_run_id 만 만든다)
+    kind           TEXT    NOT NULL,      -- sweep | backfill | krx_load | holiday | snapshot
+    provider       TEXT    NOT NULL,      -- kis | krx
+    market         TEXT,                  -- 거래 세그먼트 코드(결정 15). 복수면 쉼표 연결 ('kospi,kosdaq')
+    env            TEXT,                  -- real | paper. KRX 는 NULL
+    host           TEXT,
+    pid            INTEGER,
+    started_at     TEXT    NOT NULL,      -- ISO 초 단위, Asia/Seoul
+    finished_at    TEXT,
+    status         TEXT    NOT NULL,      -- running | ok | partial | failed | aborted | budget
+    calls          INTEGER,               -- HTTP 요청 수
+    rows           INTEGER,               -- 적재 행 수 합
+    summary        TEXT,                  -- #collector 요약 1줄
+    git_commit     TEXT,                  -- 실행한 체크아웃의 HEAD. 취득 실패 시 NULL
+    config_sha256  TEXT,                  -- config/config.yaml 파일 바이트의 SHA-256 (소문자 hex)
+    source_kind    TEXT    NOT NULL       -- live | derived(소급 등록)
+);
 """
 
 # 인덱스는 옛 형태 테이블 검사(check_schema)를 통과한 뒤 만든다 - 옛 테이블에 없는 컬럼 인덱스로 먼저 실패하지 않게.
@@ -122,6 +144,8 @@ CREATE INDEX IF NOT EXISTS ix_candles_1m_date ON candles_1m (trade_date, symbol)
 CREATE INDEX IF NOT EXISTS ix_collector_log_run ON collector_log (run_id);
 CREATE INDEX IF NOT EXISTS ix_kis_call_log_run ON kis_call_log (run_id);
 CREATE INDEX IF NOT EXISTS ix_kis_call_log_service_day ON kis_call_log (service, called_at);
+CREATE INDEX IF NOT EXISTS ix_runs_kind_started ON runs (kind, started_at);
+CREATE INDEX IF NOT EXISTS ix_runs_started ON runs (started_at);
 """
 
 SCHEMA_SQL = SCHEMA_TABLES_SQL + SCHEMA_INDEX_SQL
@@ -192,3 +216,4 @@ def connect(db_path: str | Path, *, busy_timeout_sec: float = 60) -> sqlite3.Con
         conn.close()
         raise
     return conn
+

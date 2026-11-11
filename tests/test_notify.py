@@ -1,6 +1,12 @@
-"""디스코드 채널 분리 테스트 - purpose 라우팅·미설정 생략·경고 조건 4종 발송 (스텁 세션, 네트워크 없음)."""
+"""디스코드 채널 분리 테스트 - purpose 라우팅·미설정 생략·경고 조건 4종 발송 (스텁 세션, 네트워크 없음).
+
+지시 문안 5 커밋 단위 3(실행 대장)에서 바뀐 점은 `_DummyConn` 뿐이다.
+runner._run 이 실행 대장(결정 14) start_run/finish_run 을 부르므로, connect 를 대역으로 바꾼 중단 경로 테스트도
+runs 테이블의 INSERT·SELECT·UPDATE 를 받아 줄 최소 연결이 필요하다. 단언은 원본과 같다.
+"""
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -131,6 +137,40 @@ def test_abort_path_respects_no_notify(cfg, webhooks, monkeypatch):
     assert sent == []
 
 
+class _DummyCursor:
+    def __init__(self, row) -> None:
+        self._row = row
+
+    def fetchone(self):
+        return self._row
+
+
 class _DummyConn:
+    """실행 대장(runs) 기록만 받아 주는 최소 연결 대역 - start_run·finish_run 이 쓰는 인터페이스만 구현한다."""
+
+    def __init__(self) -> None:
+        self.status: dict[str, str] = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        return False
+
+    def execute(self, sql, params=()):
+        text = " ".join(str(sql).split())
+        if text.startswith("INSERT INTO runs"):
+            if params[0] in self.status:
+                raise sqlite3.IntegrityError("UNIQUE constraint failed: runs.run_id")
+            self.status[params[0]] = params[9]                  # 10번째 컬럼이 status
+            return _DummyCursor(None)
+        if text.startswith("UPDATE runs"):
+            self.status[params[5]] = params[0]                  # (status, finished_at, calls, rows, summary, run_id)
+            return _DummyCursor(None)
+        if text.startswith("SELECT status FROM runs"):
+            status = self.status.get(params[0])
+            return _DummyCursor((status,) if status is not None else None)
+        raise AssertionError(f"예상하지 못한 SQL: {text}")
+
     def close(self) -> None:
         pass

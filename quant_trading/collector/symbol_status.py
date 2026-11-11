@@ -8,18 +8,23 @@
 - 파일 신선도(폴백 여부·파일 해시·mtime·경로·행 수·파서 버전)는 헤더 symbol_status_snapshot 에 하루 2행으로 남긴다 (보완 43).
 - 같은 날 같은 kind 재실행은 UPSERT. 유니버스는 pre_open 판만 읽는다.
 - 사이렌(보완 42): 캐시 폴백·원본 보관 실패는 #alerts 한 줄, 최상위 예외는 #alerts 중단 알림 후 전파. #collector 요약은 항상 보낸다.
+- 실행 대장(결정 14): 단독 실행(run_snapshot)은 DB 연결 직후·다운로드 전에 start_run(kind=snapshot, provider=kis,
+  market=collector.market, env=NULL)을 넣고 요약 뒤 finish_run 으로 갱신한다. 20:30 스윕 연동 스냅샷은 스윕의 run_id 를
+  쓰므로 별도 대장 행을 만들지 않는다.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
+from quant_trading.collector.runs import (
+    KIND_SNAPSHOT, PROVIDER_KIS, STATUS_FAILED, STATUS_OK, STATUS_PARTIAL, finish_run, start_run,
+)
 from quant_trading.collector.symbols import PARSER_VERSION, MasterRecord, SymbolLoadResult, load_symbols
 from quant_trading.config import collector_market, market_tz, require
 
@@ -181,6 +186,13 @@ def snapshot_from_loaded(conn: sqlite3.Connection, loaded: SymbolLoadResult, kin
     return summary
 
 
+def snapshot_status(loaded: SymbolLoadResult) -> str:
+    """실행 대장 status 매핑 (결정 14) - 폴백 또는 원본 보관 실패면 partial, 아니면 ok. 예외는 failed(예외 경로)."""
+    if loaded.is_fallback or loaded.save_error:
+        return STATUS_PARTIAL
+    return STATUS_OK
+
+
 def alert_lines(summary: SnapshotSummary, loaded: SymbolLoadResult) -> list[str]:
     """#alerts 로 보낼 경고 문장들 - 폴백 경고와 원본 보관 실패."""
     lines: list[str] = []
@@ -197,6 +209,16 @@ def _notify(cfg: dict[str, Any], purpose: str, message: str) -> None:
         discord.send(message, cfg, purpose=purpose)
     except Exception as exc:  # noqa: BLE001 - 알림 실패가 스냅샷을 막지 않는다
         log.warning("알림 전송 중 예외(%s): %s", purpose, exc)
+
+
+def _finish_quietly(conn, run_id: str | None, summary: str, now: datetime) -> None:
+    """예외 경로의 종료(failed) 기록 시도 - 실패해도 원래 예외의 전파를 막지 않는다."""
+    if run_id is None or conn is None:
+        return
+    try:
+        finish_run(conn, run_id, status=STATUS_FAILED, calls=None, rows=None, summary=summary[:500], now=now)
+    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
+        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)
 
 
 def run_snapshot(
@@ -236,15 +258,23 @@ def _run_snapshot(
     from quant_trading.collector.schema import connect
     from quant_trading.notify import discord
 
-    tz = market_tz(cfg, collector_market(cfg))
+    market = collector_market(cfg)
+    tz = market_tz(cfg, market)
     now = now.astimezone(tz) if now else datetime.now(tz)
     date = snapshot_date or now.date().isoformat()
-    run_id = f"{now:%Y%m%dT%H%M%S}-{os.getpid()}"
-    loaded = load_symbols(cfg, downloader=downloader, archive=(date, kind))
     conn = connect(str(require(cfg, "collector", "db_path")),
                    busy_timeout_sec=float(require(cfg, "collector", "db_busy_timeout_sec")))
+    run_id: str | None = None
     try:
+        # 실행 대장 등록은 다운로드(HTTP) 전이다. 파일은 무자격증명이므로 env 는 NULL (지시 문안 5 2-4)
+        run_id = start_run(conn, kind=KIND_SNAPSHOT, provider=PROVIDER_KIS, market=market, env=None, now=now)
+        loaded = load_symbols(cfg, downloader=downloader, archive=(date, kind))
         summary = snapshot_from_loaded(conn, loaded, kind, snapshot_date=date, now=now, run_id=run_id)
+        finish_run(conn, run_id, status=snapshot_status(loaded), calls=0 if loaded.is_fallback else 1,
+                   rows=len(loaded.records), summary=summary.message(), now=now)
+    except Exception as exc:
+        _finish_quietly(conn, run_id, f"{exc.__class__.__name__}: {exc}", now)
+        raise
     finally:
         conn.close()
     if notify:

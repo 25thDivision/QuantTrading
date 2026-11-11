@@ -1,5 +1,11 @@
 """보관 zip 폴백 선택 규칙·손상 zip·.zip.tmp 정리 테스트 (지시 문안 5, 결정 14 "수집기 공통 구조").
 
+지시 문안 5 커밋 단위 3(실행 대장)에서 바뀐 점은
+test_entry_point_returns_exit_code_2_on_corrupt_fallback 의 마지막 단언 하나다.
+실행 대장(결정 14)은 DB 연결 직후·다운로드 전에 start_run 을 넣으므로 중단 시에도 DB 파일과 runs 1행이 남는다.
+"적재 전에 중단" 이라는 원래 의도는 스냅샷 표(symbol_status_daily·symbol_status_snapshot)에 행이 없고
+runs 가 failed 1행인 것으로 확인한다.
+
 스텁 zip 바이트만 쓰고 네트워크는 쓰지 않는다. 보관 폴더·DB 는 tmp_path 아래로 돌려 실제 data/ 를 건드리지 않는다.
 zip 바이트는 한 번만 만들어 재사용한다 (zip 헤더의 타임스탬프 때문에 호출마다 바이트가 달라질 수 있다).
 """
@@ -14,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from quant_trading.collector.schema import connect
 from quant_trading.collector.symbols import (
     MASTER_FIELDS, PART2_LEN, SymbolSourceError, cleanup_tmp_archives, latest_archive, load_symbols,
     parse_archive_name,
@@ -165,7 +172,16 @@ def test_entry_point_returns_exit_code_2_on_corrupt_fallback(cfg, monkeypatch, t
     monkeypatch.setattr("quant_trading.collector.symbols.requests.get", failing_get)
 
     assert module.main(["--kind", "pre_open", "--date", "2026-10-06", "--no-notify"]) == 2
-    assert not (tmp_path / "test.sqlite3").exists()                  # 적재 전에 중단
+    # 적재 전에 중단 - 스냅샷 표는 비어 있고, 실행 대장(결정 14)에 시작·실패 1행만 남는다
+    c = connect(cfg["collector"]["db_path"])
+    try:
+        daily = c.execute("SELECT COUNT(*) FROM symbol_status_daily").fetchone()[0]
+        headers = c.execute("SELECT COUNT(*) FROM symbol_status_snapshot").fetchone()[0]
+        statuses = [r[0] for r in c.execute("SELECT status FROM runs").fetchall()]
+    finally:
+        c.close()
+    assert (daily, headers) == (0, 0)
+    assert statuses == ["failed"]
 
 
 # ------------------------------------------------------------ 3. .zip.tmp 정리

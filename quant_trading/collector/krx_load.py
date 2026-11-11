@@ -16,6 +16,8 @@
 - 사이렌(보완 42): 정상 완료·예산 도달 외 모든 종료와, 정상 완료라도 건너뛴 날짜·행 parse_error 가 1건 이상이면 #alerts.
   #collector 요약은 성공·실패 무관 항상 보낸다(일지).
 - 한국투자증권 잠금과 무관하므로 kis_<env>.lock 은 잡지 않는다. 같은 머신의 --load 중복은 krx.lock (진입점에서).
+- 실행 대장(결정 14): DB 연결 직후·첫 HTTP 전에 start_run(kind=krx_load, provider=krx, market=krx.markets 쉼표 연결,
+  env=NULL)을 넣고, 요약 문자열을 만든 뒤 finish_run 으로 결과를 갱신한다. dry-run 은 대장에 아무것도 쓰지 않는다.
 """
 from __future__ import annotations
 
@@ -34,6 +36,10 @@ from quant_trading.collector.krx_client import (
 )
 from quant_trading.collector.krx_probe import KIND_ETF, KIND_INDEX, KIND_ISSUE, KIND_STOCK, service_kind
 from quant_trading.collector.krx_rows import ParseError, convert_rows, is_blank_etf_row
+from quant_trading.collector.runs import (
+    KIND_KRX_LOAD, PROVIDER_KRX, STATUS_ABORTED, STATUS_BUDGET, STATUS_FAILED, STATUS_OK, STATUS_PARTIAL,
+    finish_run, host_name, new_run_id, start_run,
+)
 from quant_trading.config import krx_markets, market_tz, require
 
 log = logging.getLogger(__name__)
@@ -113,7 +119,7 @@ class DatePlan:
 class LoadResult:
     started_at: datetime
     finished_at: datetime
-    run_id: str = ""                   # 실행 식별자 (YYYYMMDDTHHMMSS-<pid>) - krx_call_log.run_id
+    run_id: str = ""                   # 실행 식별자 (runs.new_run_id 형식) - krx_call_log.run_id 와 같다
     planned: int = 0
     processed: int = 0                 # 적재(또는 휴장일 확정·pending)까지 끝낸 날짜 수
     trading_days: int = 0
@@ -185,10 +191,11 @@ def plan_dates(conn, st: LoadSettings, *, since: str, until: str, today: str) ->
 
 # ------------------------------------------------------------------ load
 class _Loader:
-    def __init__(self, conn, client: KrxClient, st: LoadSettings, *, clock: Callable[[], datetime], until: str) -> None:
+    def __init__(self, conn, client: KrxClient, st: LoadSettings, *, clock: Callable[[], datetime], until: str,
+                 run_id: str | None = None) -> None:
         self.conn, self.client, self.st, self.clock, self.until = conn, client, st, clock, until
         self.result = LoadResult(started_at=clock(), finished_at=clock(), budget=st.daily_budget)
-        self.run_id = f"{self.result.started_at:%Y%m%dT%H%M%S}-{os.getpid()}"
+        self.run_id = run_id or new_run_id(KIND_KRX_LOAD, self.result.started_at, host_name(), os.getpid())
         self.result.run_id = self.run_id
         self.today = self.result.started_at.date().isoformat()
         self.calls_today = store.calls_on(conn, self.today)
@@ -345,8 +352,12 @@ def load(
     until: str | None = None,
     budget: int | None = None,
     clock: Callable[[], datetime] | None = None,
+    run_id: str | None = None,
 ) -> LoadResult:
-    """상태 주도 적재 1회 실행. until 기본 어제(한국 날짜), since 기본 krx.history_start. 둘 다 ISO/YYYYMMDD."""
+    """상태 주도 적재 1회 실행. until 기본 어제(한국 날짜), since 기본 krx.history_start. 둘 다 ISO/YYYYMMDD.
+
+    run_id 는 실행 대장의 값을 받는다 (run_load 경유). 직접 호출(None)이면 new_run_id 로 만든다.
+    """
     st = settings(cfg, budget=budget)
     clock = clock or (lambda: datetime.now(st.tz))
     if now is not None:
@@ -355,7 +366,8 @@ def load(
     today = clock().date()
     since_iso = normalize_date(since) or st.history_start
     until_iso = normalize_date(until) or _iso(today - timedelta(days=1))
-    loader = _Loader(conn, client, st, clock=clock, until=until_iso)
+    run_id = run_id or new_run_id(KIND_KRX_LOAD, clock(), host_name(), os.getpid())
+    loader = _Loader(conn, client, st, clock=clock, until=until_iso, run_id=run_id)
     plans = plan_dates(conn, st, since=since_iso, until=until_iso, today=today.isoformat())
     loader.result.planned = len(plans)
     log.info("KRX 적재 시작: run_id=%s 대상 %d일 (%s ~ %s, %s), 오늘 호출 %d/%d", loader.run_id, len(plans), since_iso,
@@ -388,6 +400,21 @@ def load(
     loader.result.calls_today = loader.calls_today
     loader.result.finished_at = clock()
     return loader.result
+
+
+def load_status(result: LoadResult) -> str:
+    """실행 대장 status 매핑 (결정 14) - 예산 도달이 건너뜀보다 우선한다.
+
+    중단 사유(인증·한도·연속 실패) = aborted / 예산 도달 = budget / 건너뜀·행 parse_error >= 1 = partial / 그 밖은 ok.
+    예외는 호출자(run_load)의 예외 경로가 failed 로 남긴다.
+    """
+    if result.abort_reason:
+        return STATUS_ABORTED
+    if result.budget_reached:
+        return STATUS_BUDGET
+    if sum(result.skipped_dates.values()) >= 1 or result.parse_errors >= 1:
+        return STATUS_PARTIAL
+    return STATUS_OK
 
 
 def format_summary(result: LoadResult, *, label: str = "krx") -> str:
@@ -456,6 +483,16 @@ def format_dry_run(plans: list[DatePlan], *, calls_today: int, budget: int, sinc
 
 
 # ------------------------------------------------------------ orchestration
+def _finish_quietly(conn, run_id: str | None, summary: str, now: datetime) -> None:
+    """예외 경로의 종료(failed) 기록 시도 - 실패해도 원래 예외의 전파를 막지 않는다."""
+    if run_id is None or conn is None:
+        return
+    try:
+        finish_run(conn, run_id, status=STATUS_FAILED, calls=None, rows=None, summary=summary[:500], now=now)
+    except Exception as exc:  # noqa: BLE001 - 대장 기록 실패가 원래 예외를 가리면 안 된다
+        log.warning("실행 대장 종료 기록 실패 run_id=%s: %s", run_id, exc)
+
+
 def run_load(
     cfg: dict[str, Any],
     *,
@@ -475,7 +512,8 @@ def run_load(
     from quant_trading.notify import discord
 
     st = settings(cfg, budget=budget)
-    today = (now.astimezone(st.tz) if now else datetime.now(st.tz)).date()
+    current = now.astimezone(st.tz) if now else datetime.now(st.tz)
+    today = current.date()
     since_iso = normalize_date(since) or st.history_start
     until_iso = normalize_date(until) or _iso(today - timedelta(days=1))
     db_path = str(require(cfg, "collector", "db_path"))
@@ -491,20 +529,27 @@ def run_load(
         return None
     notify = notify and bool(require(cfg, "collector", "notify", "discord"))
     with file_lock(cfg, "krx", label="krx", wait=wait):
-        krx_client = client or KrxClient(cfg)
+        krx_client = client or KrxClient(cfg)      # 인증키 확인만 한다 - 생성으로는 HTTP 가 없다
         conn = None
+        run_id: str | None = None
         try:
             # 스키마 불일치(SchemaMismatchError)도 아래 사이렌 경로를 탄다
             conn = connect(db_path, busy_timeout_sec=st.db_busy_timeout_sec)
-            result = load(cfg, krx_client, conn, now=now, since=since_iso, until=until_iso, budget=budget)
+            # 실행 대장 등록은 첫 HTTP 전 (결정 14). KRX 는 env 가 없다 - NULL
+            run_id = start_run(conn, kind=KIND_KRX_LOAD, provider=PROVIDER_KRX, market=",".join(st.markets),
+                               env=None, now=current)
+            result = load(cfg, krx_client, conn, now=now, since=since_iso, until=until_iso, budget=budget, run_id=run_id)
+            message = format_summary(result)
+            finish_run(conn, run_id, status=load_status(result), calls=result.calls, rows=sum(result.rows.values()),
+                       summary=message, now=result.finished_at)
         except Exception as exc:
+            _finish_quietly(conn, run_id, f"{exc.__class__.__name__}: {exc}", current)
             if notify:
                 _notify(cfg, discord.PURPOSE_ALERTS, f"[krx] 중단: {exc.__class__.__name__}: {exc}")
             raise
         finally:
             if conn is not None:
                 conn.close()
-    message = format_summary(result)
     log.info(message)
     emit(message)
     if notify:

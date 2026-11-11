@@ -1,5 +1,10 @@
 """보완 43·46 - 스냅샷 헤더(symbol_status_snapshot)·zip 원본 보관·보관 폴더 폴백 일원화 테스트.
 
+지시 문안 5 커밋 단위 3(실행 대장)에서 바뀐 점은 둘이다.
+1) RUN_ID_RE - 실행 대장(결정 14)의 run_id 형식이 YYYYMMDDTHHMMSS-<kind>-<host>-<pid> 로 바뀌었다.
+2) same_second_run_ids - 한 테스트가 같은 초에 두 번 이상 스냅샷을 적재하면 run_id 기본키가 충돌한다(설계상 의도).
+   테스트는 초를 밀어 충돌을 피한다.
+
 스텁 zip·스텁 어댑터만 쓰고 네트워크는 쓰지 않는다. 보관 폴더는 tmp_path 로 바꿔 실제 data/ 를 건드리지 않는다.
 zip 바이트는 한 번만 만들어 재사용한다 (zip 헤더의 타임스탬프 때문에 호출마다 바이트가 달라질 수 있다).
 """
@@ -8,10 +13,11 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import io
+import itertools
 import json
 import re
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -19,6 +25,7 @@ import pytest
 
 from quant_trading.broker.stub import StubQuoteClient
 from quant_trading.collector import runner
+from quant_trading.collector import runs as runs_module
 from quant_trading.collector.schema import connect
 from quant_trading.collector.symbol_status import KIND_PRE_OPEN, run_snapshot
 from quant_trading.collector.symbols import MASTER_FIELDS, PART2_LEN, SymbolSourceError
@@ -28,8 +35,17 @@ REPO = Path(__file__).resolve().parent.parent
 KST = ZoneInfo("Asia/Seoul")
 NOW = datetime(2026, 10, 6, 8, 50, tzinfo=KST)
 MEMBER = "kospi_code.mst"
-RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-\d+$")
+RUN_ID_RE = re.compile(r"^\d{8}T\d{6}-snapshot-.+-\d+$")
 SWEEP_SYMBOLS = ["000001", "000002", "0052T0", "005930", "005935", "069500"]   # SAMPLE 의 ST·EF (common_only false)
+
+
+@pytest.fixture(autouse=True)
+def same_second_run_ids(monkeypatch):
+    """같은 초 재실행은 run_id 기본키 충돌(설계) - 테스트는 실행마다 초를 밀어 충돌을 피한다."""
+    real = runs_module.new_run_id
+    counter = itertools.count()
+    monkeypatch.setattr(runs_module, "new_run_id",
+                        lambda kind, now, host, pid: real(kind, now + timedelta(seconds=next(counter)), host, pid))
 
 
 def make_line(code: str, name: str, group: str, *, pref: str = "0", halted: str = "N", managed: str = "N", liq: str = "N",
